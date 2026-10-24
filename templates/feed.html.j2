@@ -24,6 +24,43 @@
 <!-- Coding Assignment #1: three cards for the logged-in user -->
 <div class="col-md-8 mx-auto mb-4">
 
+  <!-- Coding Assignment #3 (Chapter 5, Design Claims 22 and 20): newcomer journey and first contact -->
+  {% if journey %}
+  <div class="card mb-3 border-success" id="journey-card">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <span>Your newcomer journey</span>
+      {% if journey.complete %}<span class="badge bg-success">Settled in</span>
+      {% else %}<span class="badge bg-success">{{ journey.done_count }}/3</span>{% endif %}
+    </div>
+    <div class="card-body">
+      <p class="small mb-2">Everyone who joined in {{ journey.cohort_label }} does the same three steps, in this order.
+        <a href="{{ url_for('newcomers') }}">See your group ({{ journey.cohort_size }} people)</a></p>
+      <ul class="list-group mb-2">
+        {% for step in journey.steps %}
+        <li class="list-group-item d-flex justify-content-between align-items-center {% if step.locked %}text-muted{% endif %}">
+          <div>
+            <strong>{% if step.done %}&#10003;{% elif step.locked %}&#128274;{% else %}&#8594;{% endif %} {{ step.number }}. {{ step.title }}</strong>
+            <div class="small">{{ step.text }} <em>{{ step.norm }}</em></div>
+          </div>
+          {% if step.current %}
+            {% if step.number == 1 %}<a href="{{ url_for('introduce') }}" class="btn btn-success btn-sm">Introduce yourself</a>
+            {% elif step.number == 2 %}<a href="{{ url_for('feed', sort='recommended') }}" class="btn btn-success btn-sm">Find a post</a>
+            {% else %}<a href="{{ url_for('newcomers') }}" class="btn btn-success btn-sm">See newcomers</a>{% endif %}
+          {% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+      {% if journey.contact %}
+        {% if journey.contact.welcomed_at %}
+        <p class="small mb-0">Your first contact <a href="{{ url_for('user_profile', username=journey.contact.username) }}">@{{ journey.contact.username }}</a> welcomed you. Say hi back!</p>
+        {% else %}
+        <p class="small mb-0">Your first contact is <a href="{{ url_for('user_profile', username=journey.contact.username) }}">@{{ journey.contact.username }}</a> from the welcome team. Ask them anything.</p>
+        {% endif %}
+      {% endif %}
+    </div>
+  </div>
+  {% endif %}
+
   <!-- Feature 1 (Chapter 2, Design Claim 1): needed contributions, shown first on the front page -->
   {% if current_sort != 'waiting' and page == 1 %}
   <div class="card mb-3" id="waiting-card">
@@ -158,6 +195,10 @@
         {% endif %}
       </div>
       
+      {% if current_sort == 'recommended' and entry.post.reason %}
+      <!-- Coding Assignment #3: why this post was recommended -->
+      <div class="small text-success mt-1">{{ entry.post.reason }}</div>
+      {% endif %}
       {% if current_sort == 'waiting' %}
       <div class="small text-primary mt-1">You follow @{{ entry.post.username }} and have not replied yet. React or comment to help.</div>
       {% endif %}

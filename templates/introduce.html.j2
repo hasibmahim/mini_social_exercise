@@ -1,0 +1,21 @@
+{% extends "base.html.j2" %}
+{# Coding Assignment #3, newcomer journey step 1 (Chapter 5, Design Claim 22).
+   A short introduction post. The #introduction tag lets other members find it. #}
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-lg-7">
+    <div class="card">
+      <div class="card-header"><h4 class="mb-0">Step 1: introduce yourself</h4></div>
+      <div class="card-body">
+        <p>Tell the community who you are and what you like. Keep the <strong>#introduction</strong> tag,
+           so other newcomers and the welcome team can find your post.</p>
+        <form action="{{ url_for('add_post') }}" method="POST">
+          <textarea class="form-control mb-3" id="intro-content" name="content" rows="4" required>{{ starter }}</textarea>
+          <button type="submit" class="btn btn-success">Post my introduction</button>
+          <a href="{{ url_for('feed') }}" class="btn btn-secondary">Later</a>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

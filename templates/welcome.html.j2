@@ -1,0 +1,50 @@
+{% extends "base.html.j2" %}
+{# Coding Assignment #3 (Chapter 5, Design Claim 20): the welcome team.
+   Each newcomer gets one team member as first contact; this page lists yours. #}
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-lg-8">
+    <h2 class="mb-1">Welcome team</h2>
+    <p class="text-muted">Team members are the first contact for new people. Every newcomer gets one of you.
+       A friendly reply in the first days makes newcomers stay. ({{ team_size }} member(s) in the team)</p>
+
+    {% if on_team %}
+      <form action="{{ url_for('leave_welcome_team') }}" method="POST" class="mb-3">
+        <span class="badge bg-success me-2">You are on the welcome team</span>
+        <button type="submit" class="btn btn-secondary btn-sm">Leave the team</button>
+      </form>
+
+      <div class="card">
+        <div class="card-header">Newcomers you are first contact for</div>
+        <ul class="list-group list-group-flush">
+          {% for person in newcomers %}
+          <li class="list-group-item">
+            <div class="d-flex justify-content-between align-items-center">
+              <a href="{{ url_for('user_profile', username=person.username) }}">@{{ person.username }}</a>
+              {% if person.welcomed_at %}<span class="badge bg-success">Welcomed</span>{% endif %}
+            </div>
+            {% if person.post_id %}
+              <div class="small text-muted mb-2">Newest post: {{ person.post_content }}</div>
+              {% if not person.welcomed_at %}
+              <form action="{{ url_for('send_welcome', newcomer_id=person.id) }}" method="POST">
+                <textarea class="form-control mb-2" name="content" rows="2">Welcome to MiniSocial, @{{ person.username }}! Nice to meet you. Ask me if you need any help.</textarea>
+                <button type="submit" class="btn btn-success btn-sm">Send welcome</button>
+              </form>
+              {% endif %}
+            {% else %}
+              <div class="small text-muted">No post yet. You can welcome them after their first post.</div>
+            {% endif %}
+          </li>
+          {% else %}
+          <li class="list-group-item">No newcomers yet. New people get a first contact when they join.</li>
+          {% endfor %}
+        </ul>
+      </div>
+    {% else %}
+      <form action="{{ url_for('join_welcome_team') }}" method="POST">
+        <button type="submit" class="btn btn-success">Join the welcome team</button>
+      </form>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

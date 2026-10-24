@@ -4,7 +4,7 @@ This is a mock social media platform created for the Social Computing course at 
 
 ## My coursework (Syed Amin Al Mahim, Social Computing 2026-2027)
 
-All my coding assignments are in this fork. In `app.py`, search for "Coding Assignment #1" or "Coding Assignment #2" to find each part. New database tables are created automatically when the app starts.
+All my coding assignments are in this fork. In `app.py`, search for "Coding Assignment #1", "Coding Assignment #2" or "Coding Assignment #3" to find each part. New database tables are created automatically when the app starts.
 
 ### Coding Assignment 1: Contribution and Commitment
 
@@ -27,6 +27,16 @@ The three cards are at the top of the feed (`templates/feed.html.j2`). The menu 
 | **Reminder before posting** (Chapter 4, Design Claim 20) | `app.py`: `check_before_saving()`, `explain_moderation()`, `cancel_reminder()`, `reminder_statistics()`, called from `add_post()` and `add_comment()`; reminder page `templates/review_content.html.j2`; numbers for the admin in `templates/admin.html.j2` |
 
 **Try it:** sign up and write a post or comment with `tier3badword`, `tier2badword` or a link. Before anything is saved, a page shows which rule the text breaks and how others would see it. You can edit it, post it anyway, or cancel. Log in as `admin` / `admin` and open `/admin` to see the reminder numbers and the user risk scores.
+
+### Coding Assignment 3: Dealing with newcomers
+
+| Part | Design claim | Where in the code |
+|---|---|---|
+| `recommend()` (Assignment 3.1): 5 posts based on the posts you reacted to positively and the people you follow, newest first, each with a short reason | | End of `app.py`: `recommend()`, `post_tokens()`, `token_stats()`; the reason line on the Recommended tab in `templates/feed.html.j2` |
+| **Newcomer journey**: the same 3 steps, in order, for everyone who joined in the same month, with a group page and a "Settled in" badge | Chapter 5, Design Claim 22 | `app.py`: `journey_status()`, `mark_step()`, `journey_after_post()`, `journey_after_reaction()`, `journey_after_comment()`, `introduce()` (`/introduce`), `newcomers()` (`/newcomers`); `templates/introduce.html.j2`, `templates/newcomers.html.j2`; the card in `templates/feed.html.j2` |
+| **Welcome team and first contact**: every newcomer gets one welcome team member, who can welcome them in one click | Chapter 5, Design Claim 20 (supports Design Claim 18) | `app.py`: `assign_first_contact()`, `first_contact_of()`, `note_welcome()`, `welcome_team()` (`/welcome`), `send_welcome()`; `templates/welcome.html.j2` |
+
+**Try it:** to test `recommend()`, make a new account, follow @starboy99, @DancingDolphin and @blogger_bob, react to posts 1810, 1875, 1880 and 2113, and open the Recommended tab: it shows DIY posts. For the newcomer features, let an existing user join the welcome team (user menu, "Welcome team"), then sign up a new account and follow the steps on the journey card.
 
 The codebase contains three missing implementations, which you find [at end of app.py](https://github.com/Crowd-Computing-Oulu/mini_social_exercise/blob/44117e36e609b52c3452226797a0fd3fb5ff5258/app.py#L886). These are part of the coding assignments #1 and #2.
 

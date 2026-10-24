@@ -208,6 +208,8 @@ def feed():
                 waiting_preview.append(preview)
         goal = goal_status(current_user_id)                       # feature 2 (Ch2 DC13, DC15)
         received = received_totals(current_user_id)               # feature 3 (Ch3 DC30)
+    # Coding Assignment #3: the newcomer journey card (Ch5 DC22, DC20)
+    journey = journey_status(current_user_id) if current_user_id and is_newcomer(current_user_id) else None
 
     #  4. Render Template with Pagination Info 
     return render_template('feed.html.j2', 
@@ -221,7 +223,8 @@ def feed():
                            waiting_total=waiting_total,
                            waiting_preview=waiting_preview,
                            goal=goal,
-                           received=received)
+                           received=received,
+                           journey=journey)
 
 @app.route('/posts/new', methods=['POST'])
 def add_post():
@@ -255,7 +258,8 @@ def add_post():
     db.execute('INSERT INTO posts (user_id, content) VALUES (?, ?)',
                (user_id, content))
     db.commit()
-    flash('Your post was successfully created!' + goal_feedback(user_id, 'post'), 'success')
+    flash('Your post was successfully created!' + goal_feedback(user_id, 'post')
+          + journey_after_post(user_id, content), 'success')     # C3: step 1 of the newcomer journey
 
     # Redirect back to the main feed to see the new post
     return redirect(url_for('feed'))
@@ -537,7 +541,9 @@ def add_comment(post_id):
     db.execute('INSERT INTO comments (post_id, user_id, content) VALUES (?, ?, ?)',
                (post_id, user_id, content))
     db.commit()
-    flash('Your comment was added.' + goal_feedback(user_id, 'comment'), 'success')
+    note_welcome(user_id, post_id)     # C3: a first contact's comment counts as the welcome
+    flash('Your comment was added.' + goal_feedback(user_id, 'comment')
+          + journey_after_comment(user_id, post_id), 'success')  # C3: step 3 of the journey
 
     # Go back to where the user came from. After a reminder page, go to the post itself.
     if request.form.get('reminder_id'):
@@ -613,6 +619,11 @@ def add_reaction():
                    (post_id, user_id, new_reaction_type))
 
     db.commit()
+
+    # Coding Assignment #3: a reaction can be step 2 of the newcomer journey
+    message = journey_after_reaction(user_id, int(post_id), new_reaction_type)
+    if message:
+        flash(message, 'success')
 
     return redirect(request.referrer or url_for('feed'))
 
@@ -1235,6 +1246,313 @@ def return_favour(supporter_id):
     return redirect(url_for('post_detail', post_id=post_id))
 
 
+# ----- Coding Assignment #3: Dealing with newcomers -----
+# Two features, each for a design claim from the course book (Chapter 5):
+#
+# 1. "Newcomer journey" - Chapter 5, Design Claim 22:
+#    "By using formal, sequential and collective socialization tactics, new
+#     members are likely to become more committed to the community, learn how
+#     to behave in it and contribute more."
+#    Formal: the same official three steps for everyone, with a badge at the end.
+#    Sequential: a step only counts after the step before it is done.
+#    Collective: everyone who joined in the same month is one group (a cohort),
+#    sees the group's progress, and the last step is to welcome another newcomer.
+#    Each step also teaches one norm of the community.
+#
+# 2. "Welcome team and first contact" - Chapter 5, Design Claim 20:
+#    "Assigning the responsibilities of having friendly interactions with
+#     newcomers to particular community members increases the frequency of
+#     these interactions."
+#    Members can join the welcome team. Every newcomer gets one team member as
+#    their first contact. That member sees their newcomers and can send a
+#    welcome in one click. This supports Design Claim 18 (friendly first contact
+#    soon after joining makes newcomers stay).
+
+NEWCOMER_DAYS = 30          # accounts younger than this are newcomers
+
+# (title, what to do, the norm this step teaches)
+JOURNEY_STEPS = [
+    ('Introduce yourself',
+     'Write a short post about you. It gets the #introduction tag, so others can find you.',
+     'Here people say who they are.'),
+    ('React to a post you like',
+     'Give someone a reaction. Reactions are how people here say thanks.',
+     'Give feedback to others.'),
+    ('Welcome another newcomer',
+     'Leave a kind comment on a post by someone who joined this month.',
+     'Be kind to new people.'),
+]
+
+
+def create_newcomer_tables():
+    """Creates the tables for Coding Assignment #3 once, if they do not exist yet."""
+    with sqlite3.connect(DATABASE) as db:
+        db.execute('''
+            CREATE TABLE IF NOT EXISTS newcomer_journey (
+                user_id   INTEGER PRIMARY KEY,
+                step1_at  TIMESTAMP,     -- wrote an #introduction post
+                step2_at  TIMESTAMP,     -- reacted to another member's post
+                step3_at  TIMESTAMP      -- commented on another newcomer's post
+            )''')
+        db.execute('''
+            CREATE TABLE IF NOT EXISTS welcome_team (
+                user_id    INTEGER PRIMARY KEY,
+                joined_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
+            )''')
+        db.execute('''
+            CREATE TABLE IF NOT EXISTS first_contacts (
+                newcomer_id  INTEGER PRIMARY KEY,
+                helper_id    INTEGER NOT NULL,       -- the welcome team member
+                assigned_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+                welcomed_at  TIMESTAMP               -- when the helper welcomed them
+            )''')
+
+create_newcomer_tables()
+
+
+def user_created_at(user_id):
+    row = query_db('SELECT created_at FROM users WHERE id = ?', (user_id,), one=True)
+    return row['created_at'] if row else None
+
+
+def is_newcomer(user_id):
+    created = user_created_at(user_id)
+    return created is not None and account_age_days(created) < NEWCOMER_DAYS
+
+
+def cohort_label(cohort):
+    """'2026-10' -> 'October 2026'."""
+    return datetime.strptime(cohort, '%Y-%m').strftime('%B %Y')
+
+
+def cohort_of(user_id):
+    """The cohort is the month the account was made in, for example '2026-10'."""
+    created = user_created_at(user_id)
+    if created is None:
+        return datetime.utcnow().strftime('%Y-%m')
+    if isinstance(created, str):
+        return created[:7]
+    return created.strftime('%Y-%m')
+
+
+# --- Feature 1: newcomer journey (Chapter 5, Design Claim 22) ---
+
+def journey_row(user_id):
+    row = query_db('SELECT * FROM newcomer_journey WHERE user_id = ?', (user_id,), one=True)
+    return dict(row) if row else {}
+
+
+def mark_step(user_id, step):
+    """Saves that a step is done (only the first time)."""
+    query_db('INSERT INTO newcomer_journey (user_id) VALUES (?) ON CONFLICT(user_id) DO NOTHING',
+             (user_id,), commit=True)
+    # step is always 1, 2 or 3 (set by our code, never by the user)
+    query_db(f'UPDATE newcomer_journey SET step{step}_at = CURRENT_TIMESTAMP '
+             f'WHERE user_id = ? AND step{step}_at IS NULL', (user_id,), commit=True)
+
+
+def journey_status(user_id):
+    """The journey card data: the three steps (done, current or locked) and the first contact."""
+    row = journey_row(user_id)
+    steps = []
+    for number, (title, text, norm) in enumerate(JOURNEY_STEPS, start=1):
+        done = bool(row.get(f'step{number}_at'))
+        unlocked = number == 1 or bool(row.get(f'step{number - 1}_at'))
+        steps.append({'number': number, 'title': title, 'text': text, 'norm': norm,
+                      'done': done, 'current': unlocked and not done, 'locked': not unlocked})
+    cohort = cohort_of(user_id)
+    cohort_size = query_db("SELECT COUNT(*) AS n FROM users WHERE strftime('%Y-%m', created_at) = ?",
+                           (cohort,), one=True)['n']
+    assign_first_contact(user_id)
+    return {'steps': steps,
+            'done_count': sum(step['done'] for step in steps),
+            'complete': all(step['done'] for step in steps),
+            'cohort': cohort,
+            'cohort_label': cohort_label(cohort),
+            'cohort_size': cohort_size,
+            'contact': first_contact_of(user_id)}
+
+
+def journey_after_post(user_id, content):
+    """Step 1: a newcomer's post with #introduction. Returns a message or ''."""
+    if '#introduction' in (content or '').lower() and is_newcomer(user_id) \
+            and not journey_row(user_id).get('step1_at'):
+        mark_step(user_id, 1)
+        return ' Newcomer journey: step 1 done! Next: react to a post you like.'
+    return ''
+
+
+def journey_after_reaction(user_id, post_id, reaction_type):
+    """Step 2: a positive reaction to someone else's post, after step 1."""
+    if reaction_type not in POSITIVE_REACTIONS or not is_newcomer(user_id):
+        return ''
+    post = query_db('SELECT user_id FROM posts WHERE id = ?', (post_id,), one=True)
+    row = journey_row(user_id)
+    if post and post['user_id'] != user_id and row.get('step1_at') and not row.get('step2_at'):
+        mark_step(user_id, 2)
+        return 'Newcomer journey: step 2 done! Last step: welcome another newcomer.'
+    return ''
+
+
+def journey_after_comment(user_id, post_id):
+    """Step 3: a comment on another newcomer's post, after step 2."""
+    if not is_newcomer(user_id):
+        return ''
+    post = query_db('SELECT user_id FROM posts WHERE id = ?', (post_id,), one=True)
+    row = journey_row(user_id)
+    if post and post['user_id'] != user_id and is_newcomer(post['user_id']) \
+            and row.get('step2_at') and not row.get('step3_at'):
+        mark_step(user_id, 3)
+        return ' Newcomer journey complete! You earned the "Settled in" badge.'
+    return ''
+
+
+@app.route('/introduce')
+def introduce():
+    """Step 1 helper page: a short introduction post with the #introduction tag."""
+    if not session.get('user_id'):
+        flash('You must be logged in.', 'danger')
+        return redirect(url_for('login'))
+    starter = f"Hi everyone! I'm {session.get('username')}. I like \n\n#introduction"
+    return render_template('introduce.html.j2', starter=starter)
+
+
+@app.route('/newcomers')
+def newcomers():
+    """The cohort page: everyone who joined in the same month, and how far they are."""
+    user_id = session.get('user_id')
+    cohort = cohort_of(user_id) if user_id else datetime.utcnow().strftime('%Y-%m')
+    members = query_db(
+        "SELECT u.id, u.username, u.created_at, j.step1_at, j.step2_at, j.step3_at, "
+        "  (SELECT p.id FROM posts p WHERE p.user_id = u.id AND lower(p.content) LIKE '%#introduction%' "
+        "   ORDER BY p.created_at DESC LIMIT 1) AS intro_post "
+        "FROM users u LEFT JOIN newcomer_journey j ON j.user_id = u.id "
+        "WHERE strftime('%Y-%m', u.created_at) = ? ORDER BY u.created_at", (cohort,)) or []
+    people = []
+    for row in members:
+        person = dict(row)
+        person['done'] = sum(1 for key in ('step1_at', 'step2_at', 'step3_at') if person[key])
+        people.append(person)
+    return render_template('newcomers.html.j2', people=people, cohort=cohort_label(cohort),
+                           journey=journey_status(user_id) if user_id and is_newcomer(user_id) else None)
+
+
+# --- Feature 2: welcome team and first contact (Chapter 5, Design Claim 20) ---
+
+def on_welcome_team(user_id):
+    return query_db('SELECT 1 FROM welcome_team WHERE user_id = ?', (user_id,), one=True) is not None
+
+
+def assign_first_contact(newcomer_id):
+    """
+    Gives a newcomer one welcome team member as first contact. We pick the team
+    member with the fewest newcomers, so the work is shared fairly.
+    """
+    if not is_newcomer(newcomer_id):
+        return
+    if query_db('SELECT 1 FROM first_contacts WHERE newcomer_id = ?', (newcomer_id,), one=True):
+        return
+    helper = query_db('''
+        SELECT w.user_id FROM welcome_team w
+        LEFT JOIN first_contacts f ON f.helper_id = w.user_id
+        WHERE w.user_id != ?
+        GROUP BY w.user_id
+        ORDER BY COUNT(f.newcomer_id), w.joined_at
+        LIMIT 1''', (newcomer_id,), one=True)
+    if helper:
+        query_db('INSERT INTO first_contacts (newcomer_id, helper_id) VALUES (?, ?)',
+                 (newcomer_id, helper['user_id']), commit=True)
+
+
+def first_contact_of(newcomer_id):
+    row = query_db('SELECT f.helper_id, f.welcomed_at, u.username FROM first_contacts f '
+                   'JOIN users u ON u.id = f.helper_id WHERE f.newcomer_id = ?', (newcomer_id,), one=True)
+    return dict(row) if row else None
+
+
+def note_welcome(helper_id, post_id):
+    """If a first contact comments on their newcomer's post, that counts as the welcome."""
+    post = query_db('SELECT user_id FROM posts WHERE id = ?', (post_id,), one=True)
+    if post:
+        query_db('UPDATE first_contacts SET welcomed_at = CURRENT_TIMESTAMP '
+                 'WHERE newcomer_id = ? AND helper_id = ? AND welcomed_at IS NULL',
+                 (post['user_id'], helper_id), commit=True)
+
+
+@app.route('/welcome')
+def welcome_team():
+    """The welcome team page: join or leave, and the newcomers you are first contact for."""
+    user_id = session.get('user_id')
+    if not user_id:
+        flash('You must be logged in.', 'danger')
+        return redirect(url_for('login'))
+    rows = query_db('''
+        SELECT u.id, u.username, u.created_at, f.welcomed_at,
+               (SELECT p.id FROM posts p WHERE p.user_id = u.id ORDER BY p.created_at DESC LIMIT 1) AS post_id,
+               (SELECT p.content FROM posts p WHERE p.user_id = u.id ORDER BY p.created_at DESC LIMIT 1) AS post_content
+        FROM first_contacts f JOIN users u ON u.id = f.newcomer_id
+        WHERE f.helper_id = ?
+        ORDER BY f.welcomed_at IS NOT NULL, f.assigned_at DESC''', (user_id,)) or []
+    mine = []
+    for row in rows:
+        person = dict(row)
+        if person['post_content']:
+            person['post_content'], _ = moderate_content(person['post_content'])
+        mine.append(person)
+    team_size = query_db('SELECT COUNT(*) AS n FROM welcome_team', one=True)['n']
+    return render_template('welcome.html.j2', on_team=on_welcome_team(user_id), newcomers=mine,
+                           team_size=team_size)
+
+
+@app.route('/welcome/join', methods=['POST'])
+def join_welcome_team():
+    user_id = session.get('user_id')
+    if not user_id:
+        return redirect(url_for('login'))
+    query_db('INSERT INTO welcome_team (user_id) VALUES (?) ON CONFLICT(user_id) DO NOTHING',
+             (user_id,), commit=True)
+    # newcomers who are still waiting for a first contact get one now
+    waiting = query_db('SELECT id FROM users WHERE id NOT IN (SELECT newcomer_id FROM first_contacts)') or []
+    for row in waiting:
+        assign_first_contact(row['id'])
+    flash('You joined the welcome team. Thank you!', 'success')
+    return redirect(url_for('welcome_team'))
+
+
+@app.route('/welcome/leave', methods=['POST'])
+def leave_welcome_team():
+    user_id = session.get('user_id')
+    if not user_id:
+        return redirect(url_for('login'))
+    query_db('DELETE FROM welcome_team WHERE user_id = ?', (user_id,), commit=True)
+    flash('You left the welcome team.', 'info')
+    return redirect(url_for('welcome_team'))
+
+
+@app.route('/welcome/send/<int:newcomer_id>', methods=['POST'])
+def send_welcome(newcomer_id):
+    """One-click welcome: a friendly comment on the newcomer's newest post."""
+    user_id = session.get('user_id')
+    if not user_id:
+        return redirect(url_for('login'))
+    contact = query_db('SELECT 1 FROM first_contacts WHERE newcomer_id = ? AND helper_id = ?',
+                       (newcomer_id, user_id), one=True)
+    if not contact:
+        abort(403)      # only the assigned first contact can use this button
+    post = query_db('SELECT id FROM posts WHERE user_id = ? ORDER BY created_at DESC LIMIT 1',
+                    (newcomer_id,), one=True)
+    text = (request.form.get('content') or '').strip()
+    if not post or not text:
+        flash('There is no post to answer yet, or the message is empty.', 'warning')
+        return redirect(url_for('welcome_team'))
+    query_db('INSERT INTO comments (post_id, user_id, content) VALUES (?, ?, ?)',
+             (post['id'], user_id, text), commit=True)
+    note_welcome(user_id, post['id'])
+    newcomer = query_db('SELECT username FROM users WHERE id = ?', (newcomer_id,), one=True)
+    flash(f"Your welcome was posted on @{newcomer['username']}'s post.", 'success')
+    return redirect(url_for('welcome_team'))
+
+
 # ----- Design Claim feature (Coding Assignment #2) -----
 # Chapter 4, Design Claim 20: "Offering people reminders at the point of an action
 # that may violate norms will reduce the number of offenses."
@@ -1557,6 +1875,59 @@ def analyse_content(content):
 
 # Coding Assignment #3
 # Assignment 3.1
+
+# Small words that say nothing about a topic. They are ignored by recommend().
+STOP_WORDS = set('''
+a about after again all also am an and any are as at be because been before being but by can could
+did do does doing done for from get got had has have having he her here hers him his how i if in into
+is it its just like me more most my no not now of off on once only or other our out over own same she
+so some such than that the their them then there these they this those through to too under until up
+very was we were what when where which while who why will with would you your yours really today
+still back time make made much many even ever every feel feels felt going gonna know let lot new one
+day days way thing things think want need see got take took into onto yes yeah
+'''.split())
+
+_token_cache = {'key': None, 'tokens': {}, 'idf': {}}
+
+
+def post_tokens(text):
+    """
+    The topic words of a post: words of 3+ letters (without stop words) and hashtags.
+    Hashtags written like #DIYChallenge are also split into 'diy' and 'challenge'.
+    """
+    words = set()
+    for raw in re.findall(r"#?\w+", text or ''):
+        if raw.startswith('#'):
+            body = raw[1:]
+            words.add('#' + body.lower())
+            for part in re.findall(r'[A-Z]+(?![a-z])|[A-Z]?[a-z]+', body):
+                if len(part) >= 3 and part.lower() not in STOP_WORDS:
+                    words.add(part.lower())
+            if body.islower() and len(body) >= 3:
+                words.add(body)
+        else:
+            word = raw.lower()
+            if len(word) >= 3 and not word.isdigit() and word not in STOP_WORDS:
+                words.add(word)
+    return words
+
+
+def token_stats(posts):
+    """
+    Topic words for every post, plus how rare each word is (IDF).
+    A rare word like 'diy' tells more about a person's taste than a common word.
+    The result is kept until a post is added or deleted.
+    """
+    key = (len(posts), max((p['id'] for p in posts), default=0))
+    if _token_cache['key'] != key:
+        tokens = {p['id']: post_tokens(p['content']) for p in posts}
+        df = collections.Counter(word for words in tokens.values() for word in words)
+        total = len(posts)
+        idf = {word: math.log((total + 1) / (count + 1)) + 1 for word, count in df.items()}
+        _token_cache.update(key=key, tokens=tokens, idf=idf)
+    return _token_cache['tokens'], _token_cache['idf']
+
+
 def recommend(user_id, filter_following):
     """
     Args:
@@ -1566,20 +1937,127 @@ def recommend(user_id, filter_following):
     Returns:
         A list of 5 recommended posts, in reverse-chronological order.
 
+    How it works (a simple mix of "content" and "social" recommendation):
+      1. Interest profile: the topic words and hashtags of the posts the user
+         reacted to positively (like, love, laugh/haha, wow). Rare words count more.
+      2. Every other post gets a score:
+           + how well its words match the profile (a word that starts the same,
+             like 'diy' and '#diysuccess', counts half)
+           + a bonus if the user follows the author
+           + a bonus for authors whose posts the user liked before
+      3. We skip the user's own posts and posts they already reacted to.
+         With filter_following, only posts from followed users are used.
+      4. The 5 best posts are shown newest first.
+      A user with no likes and no follows (a brand-new newcomer) gets the most
+      liked posts instead, so the tab is never empty. The same happens when
+      nobody is logged in.
+    Each post also gets a short 'reason', shown on the Recommended tab.
+
     To test whether your recommendation algorithm works, let's pretend we like the DIY topic. Here are some users that often post DIY comment and a few example posts. Make sure your account did not engage with anything else. You should test your algorithm with these and see if your recommendation algorithm picks up on your interest in DIY and starts showing related content.
-    
+
     Users: @starboy99, @DancingDolphin, @blogger_bob
     Posts: 1810, 1875, 1880, 2113
-    
-    Materials: 
+
+    Materials:
     - https://www.nvidia.com/en-us/glossary/recommendation-system/
     - http://www.configworks.com/mz/handout_recsys_sac2010.pdf
     - https://www.researchgate.net/publication/227268858_Recommender_Systems_Handbook
     """
+    posts = query_db('SELECT p.id, p.content, p.created_at, u.username, u.id AS user_id '
+                     'FROM posts p JOIN users u ON u.id = p.user_id') or []
+    by_id = {p['id']: p for p in posts}
 
-    recommended_posts = {} 
+    def as_result(post, reason):
+        item = dict(post)
+        item['reason'] = reason
+        return item
 
-    return recommended_posts;
+    def popular(exclude=(), allowed_authors=None, limit=5):
+        """Most liked posts (the fallback for new users and visitors)."""
+        rows = query_db(f'SELECT post_id, COUNT(*) AS n FROM reactions WHERE reaction_type IN {POSITIVE_SQL} '
+                        'GROUP BY post_id ORDER BY n DESC') or []
+        result = []
+        for row in rows:
+            post = by_id.get(row['post_id'])
+            if post is None or post['id'] in exclude:
+                continue
+            if allowed_authors is not None and post['user_id'] not in allowed_authors:
+                continue
+            result.append(as_result(post, f"Popular: {row['n']} people liked it"))
+            if len(result) == limit:
+                break
+        return result
+
+    def newest_first(items):
+        return sorted(items, key=lambda item: str(item['created_at']), reverse=True)
+
+    if not user_id:
+        return newest_first(popular())
+
+    reacted = {row['post_id'] for row in query_db('SELECT post_id FROM reactions WHERE user_id = ?',
+                                                  (user_id,)) or []}
+    liked = [row['post_id'] for row in query_db(
+        f'SELECT post_id FROM reactions WHERE user_id = ? AND reaction_type IN {POSITIVE_SQL}', (user_id,)) or []]
+    followed = {row['followed_id'] for row in query_db('SELECT followed_id FROM follows WHERE follower_id = ?',
+                                                       (user_id,)) or []}
+
+    tokens, idf = token_stats(posts)
+
+    # 1. Interest profile from the liked posts
+    profile = collections.Counter()
+    liked_authors = collections.Counter()
+    for post_id in liked:
+        if post_id in by_id:
+            liked_authors[by_id[post_id]['user_id']] += 1
+            for word in tokens.get(post_id, ()):
+                profile[word] += idf.get(word, 1.0)
+    short_words = [w.lstrip('#') for w in profile if 3 <= len(w.lstrip('#')) <= 6]
+
+    if not profile and not followed:
+        # Cold start: nothing to learn from yet
+        allowed = followed if filter_following else None
+        return newest_first(popular(exclude=reacted, allowed_authors=allowed))
+
+    # 2. Score every candidate post
+    scored = []
+    for post in posts:
+        if post['user_id'] == user_id or post['id'] in reacted:
+            continue
+        if filter_following and post['user_id'] not in followed:
+            continue
+        words = tokens.get(post['id'], set())
+        matches = {w: profile[w] for w in words if w in profile}
+        content = sum(matches.values())
+        for word in words - set(matches):
+            plain = word.lstrip('#')
+            starts = [w for w in short_words if plain != w and plain.startswith(w)]
+            if starts:
+                best = max(starts, key=lambda w: profile.get(w, 0) + profile.get('#' + w, 0))
+                content += 0.5 * max(profile.get(best, 0), profile.get('#' + best, 0))
+                matches.setdefault(best, 0)
+        social = 1.5 if post['user_id'] in followed else 0.0
+        affinity = 1.0 * liked_authors[post['user_id']]
+        score = content + social + affinity
+        if score <= 0:
+            continue
+        if matches:
+            top_word = max(matches, key=lambda w: (profile.get(w, 0), w.startswith('#')))
+            label = top_word if top_word.startswith('#') else f"'{top_word}'"
+            reason = f'Because you liked posts about {label}'
+        elif social:
+            reason = f"From @{post['username']}, who you follow"
+        else:
+            reason = f"You liked posts by @{post['username']} before"
+        scored.append((score, str(post['created_at']), as_result(post, reason)))
+
+    # 3. The 5 best, shown newest first. Fill with popular posts if fewer than 5.
+    scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    best = [item[2] for item in scored[:5]]
+    if len(best) < 5:
+        taken = reacted | {item['id'] for item in best}
+        allowed = followed if filter_following else None
+        best += popular(exclude=taken, allowed_authors=allowed, limit=5 - len(best))
+    return newest_first(best)
 
 if __name__ == '__main__':
     app.run(debug=True, port=8080)
