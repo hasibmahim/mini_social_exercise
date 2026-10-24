@@ -2,6 +2,20 @@
 
 This is a mock social media platform created for the Social Computing course at the University of Oulu by Dr. Aku Visuri and Daniel Szabo.
 
+## My coursework (Syed Amin Al Mahim, Social Computing 2026-2027)
+
+My coding assignments are in this fork. In `app.py`, search for "Coding Assignment #2" to find my code. The new database table `norm_reminders` is created automatically when the app starts.
+
+### Coding Assignment 2: Moderation
+
+| Part | Where in the code |
+|---|---|
+| `moderate_content()` (Assignment 2.1), Rules 1.1 and 1.2 | End of `app.py`. The helper `analyse_content()` does the checks and remembers which rules were broken. |
+| `user_risk_analysis()` (Assignment 2.2), Rule 2.2 | End of `app.py` |
+| **Reminder before posting** (Chapter 4, Design Claim 20) | `app.py`: `check_before_saving()`, `explain_moderation()`, `cancel_reminder()`, `reminder_statistics()`, called from `add_post()` and `add_comment()`; reminder page `templates/review_content.html.j2`; numbers for the admin in `templates/admin.html.j2` |
+
+**Try it:** sign up and write a post or comment with `tier3badword`, `tier2badword` or a link. Before anything is saved, a page shows which rule the text breaks and how others would see it. You can edit it, post it anyway, or cancel. Log in as `admin` / `admin` and open `/admin` to see the reminder numbers and the user risk scores.
+
 The codebase contains three missing implementations, which you find [at end of app.py](https://github.com/Crowd-Computing-Oulu/mini_social_exercise/blob/44117e36e609b52c3452226797a0fd3fb5ff5258/app.py#L886). These are part of the coding assignments #1 and #2.
 
 The repository contains a ready database, you do not have to create your own data.

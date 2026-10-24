@@ -1,0 +1,55 @@
+{% extends "base.html.j2" %}
+{# Design Claim 20 (Chapter 4): a reminder at the point of action.
+   Shown instead of saving, when a post or comment would break a rule. #}
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-lg-8">
+    <div class="card shadow-sm border-warning">
+      <div class="card-header bg-warning-subtle">
+        <h4 class="mb-0">Quick check before you {{ 'post' if content_type == 'post' else 'comment' }}</h4>
+      </div>
+      <div class="card-body">
+        <p>
+          Your {{ content_type }} may not follow our <a href="{{ url_for('rules') }}" target="_blank">community rules</a>.
+          Nobody has seen it yet. You can change it now.
+        </p>
+
+        <h6>What we noticed</h6>
+        <ul class="list-group mb-3">
+          {% for title, text in reasons %}
+          <li class="list-group-item">
+            <strong>{{ title }}</strong><br>
+            <span class="text-muted">{{ text }}</span>
+          </li>
+          {% endfor %}
+        </ul>
+
+        {% if is_new_account %}
+        <p class="small text-muted">
+          Your account is less than a week old, so rule breaks count 1.5 times more for now.
+        </p>
+        {% endif %}
+
+        <h6>How others would see it</h6>
+        <div class="border rounded p-3 mb-3 {{ 'text-danger' if removed else 'bg-light' }}">{{ preview }}</div>
+
+        <form action="{{ form_action }}" method="POST">
+          <input type="hidden" name="reminder_id" value="{{ reminder_id }}">
+          <label for="edit-content" class="form-label"><h6 class="mb-0">Edit your {{ content_type }}</h6></label>
+          <textarea class="form-control mb-3" id="edit-content" name="content" rows="4" required>{{ original }}</textarea>
+
+          <div class="d-flex flex-wrap gap-2">
+            <button type="submit" name="decision" value="recheck" class="btn btn-primary">
+              Check again and {{ 'post' if content_type == 'post' else 'comment' }}
+            </button>
+            <button type="submit" name="decision" value="post_anyway" class="btn btn-warning">
+              {{ 'Post' if content_type == 'post' else 'Comment' }} anyway{% if removed %} (it will be hidden){% endif %}
+            </button>
+            <a href="{{ cancel_url }}" class="btn btn-secondary">Cancel</a>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

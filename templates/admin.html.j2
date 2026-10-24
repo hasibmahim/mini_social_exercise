@@ -4,6 +4,22 @@
 <div class="container-fluid">
     <h1 class="">Admin Dashboard</h1>
 
+<!-- Design Claim 20: how users react to the reminder shown before posting -->
+<div class="card mb-4">
+    <div class="card-body">
+        <h5 class="card-title mb-1">Reminders before posting (Design Claim 20)</h5>
+        <p class="text-muted small mb-2">When a post or comment would break a rule, the user is reminded first. Did they change it?</p>
+        <div class="d-flex flex-wrap gap-4">
+            <div><strong>{{ reminders.total }}</strong> reminders shown</div>
+            <div><strong>{{ reminders.edited_clean }}</strong> edited to follow the rules</div>
+            <div><strong>{{ reminders.cancelled }}</strong> cancelled</div>
+            <div><strong>{{ reminders.posted_anyway }}</strong> posted anyway</div>
+            <div><strong>{{ reminders.open }}</strong> not finished</div>
+            <div><strong>{{ reminders.prevented_pct }}%</strong> of offenses prevented</div>
+        </div>
+    </div>
+</div>
+
 <!-- Tabs for navigation -->
 <ul class="nav nav-tabs mb-4" id="adminTab" role="tablist">
     <li class="nav-item" role="presentation">

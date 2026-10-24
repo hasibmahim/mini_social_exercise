@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, redirect, url_for, session, flash, g
+from flask import Flask, render_template, request, redirect, url_for, session, flash, g, abort
 from werkzeug.security import generate_password_hash, check_password_hash
 from cryptography.fernet import Fernet
 import collections
@@ -212,26 +212,33 @@ def add_post():
         return redirect(url_for('login'))
 
     # Get content from the submitted form
-    content = request.form.get('content')
-
-    # Pass the user's content through the moderation function
-    moderated_content = content
+    content = request.form.get('content', '')
 
     # Basic validation to ensure post is not empty
-    if moderated_content and moderated_content.strip():
-        db = get_db()
-        db.execute('INSERT INTO posts (user_id, content) VALUES (?, ?)',
-                   (user_id, moderated_content))
-        db.commit()
-        flash('Your post was successfully created!', 'success')
-    else:
-        # This will catch empty posts or posts that were fully censored
-        flash('Post cannot be empty or was fully censored.', 'warning')
+    if not content.strip():
+        flash('Post cannot be empty.', 'warning')
+        return redirect(url_for('feed'))
+
+    # Design Claim 20: check the draft at the moment of posting.
+    # If it breaks a rule, show a reminder page instead of saving straight away.
+    reminder_page = check_before_saving(user_id, content, 'post', None,
+                                        form_action=url_for('add_post'),
+                                        cancel_url=url_for('feed'))
+    if reminder_page:
+        return reminder_page
+
+    # We save the original text. moderate_content() is applied whenever the post
+    # is shown, so the rules (and the admin risk scores) stay in one place.
+    db = get_db()
+    db.execute('INSERT INTO posts (user_id, content) VALUES (?, ?)',
+               (user_id, content))
+    db.commit()
+    flash('Your post was successfully created!', 'success')
 
     # Redirect back to the main feed to see the new post
     return redirect(url_for('feed'))
     
-    
+
 @app.route('/posts/<int:post_id>/delete', methods=['POST'])
 def delete_post(post_id):
     """Handles deleting a post."""
@@ -490,19 +497,29 @@ def add_comment(post_id):
         return redirect(url_for('login'))
 
     # Get content from the submitted form
-    content = request.form.get('content')
+    content = request.form.get('content', '')
 
     # Basic validation to ensure comment is not empty
-    if content and content.strip():
-        db = get_db()
-        db.execute('INSERT INTO comments (post_id, user_id, content) VALUES (?, ?, ?)',
-                   (post_id, user_id, content))
-        db.commit()
-        flash('Your comment was added.', 'success')
-    else:
+    if not content.strip():
         flash('Comment cannot be empty.', 'warning')
+        return redirect(url_for('post_detail', post_id=post_id))
 
-    # Redirect back to the page the user came from (likely the post detail page)
+    # Design Claim 20: the same point-of-action reminder as for posts.
+    reminder_page = check_before_saving(user_id, content, 'comment', post_id,
+                                        form_action=url_for('add_comment', post_id=post_id),
+                                        cancel_url=url_for('post_detail', post_id=post_id))
+    if reminder_page:
+        return reminder_page
+
+    db = get_db()
+    db.execute('INSERT INTO comments (post_id, user_id, content) VALUES (?, ?, ?)',
+               (post_id, user_id, content))
+    db.commit()
+    flash('Your comment was added.', 'success')
+
+    # Go back to where the user came from. After a reminder page, go to the post itself.
+    if request.form.get('reminder_id'):
+        return redirect(url_for('post_detail', post_id=post_id))
     return redirect(request.referrer or url_for('post_detail', post_id=post_id))
 
 @app.route('/comments/<int:comment_id>/delete', methods=['POST'])
@@ -804,6 +821,7 @@ def admin_dashboard():
                            comments_has_prev=(comments_page > 1),
 
                            current_tab=current_tab,
+                           reminders=reminder_statistics(),  # Design Claim 20 numbers
                            PAGE_SIZE=PAGE_SIZE)
 
 
@@ -866,51 +884,325 @@ def loop_color(user_id):
     return f'rgb({r % 128 + 80}, {g % 128 + 80}, {b % 128 + 80})'
 
 
+# ----- Design Claim feature (Coding Assignment #2) -----
+# Chapter 4, Design Claim 20: "Offering people reminders at the point of an action
+# that may violate norms will reduce the number of offenses."
+#
+# How it works: when someone submits a post or comment, we run the moderation
+# rules on the draft BEFORE it is saved. If it would be censored or removed, the
+# user sees a short reminder page instead: which rule it breaks (in plain words),
+# how others would see it, and a chance to edit it, post it anyway, or cancel.
+# Every reminder and what the user did next is saved in the table
+# norm_reminders, so the admin can see if reminders really reduce offenses.
+
+def create_reminder_table():
+    """Creates the norm_reminders table once, if it does not exist yet."""
+    with sqlite3.connect(DATABASE) as db:
+        db.execute('''
+            CREATE TABLE IF NOT EXISTS norm_reminders (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id       INTEGER NOT NULL,
+                content_type  TEXT    NOT NULL,          -- 'post' or 'comment'
+                post_id       INTEGER,                   -- the post a comment belongs to
+                score_before  REAL    NOT NULL,          -- score of the first draft
+                score_after   REAL,                      -- score of what was finally posted
+                outcome       TEXT    NOT NULL DEFAULT 'pending',
+                                                         -- pending / edited_clean / edited_still_flagged
+                                                         -- / posted_anyway / cancelled
+                created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
+            )''')
+
+create_reminder_table()
+
+
+def explain_moderation(details):
+    """Turns the result of analyse_content() into short, friendly reasons."""
+    reasons = []
+    if details['removed'] == 'severe':
+        reasons.append(('Severe language (Rule 1.1.1)',
+                        'It contains a word that is not allowed here. The whole text would be removed.'))
+    elif details['removed'] == 'spam':
+        reasons.append(('Spam or scam (Rule 1.1.2)',
+                        'It contains a phrase we often see in spam or scams. The whole text would be removed.'))
+    if details['tier3']:
+        reasons.append(('Rude words (Rule 1.2.1)',
+                        f"{details['tier3']} word(s) would be hidden with ***."))
+    if details['links']:
+        reasons.append(('Links (Rule 1.2.2)',
+                        f"{details['links']} link(s) would be replaced with [link removed]."))
+    if details['caps']:
+        reasons.append(('Shouting (Rule 1.2.3)',
+                        'Most of the text is in CAPITALS, which reads as shouting.'))
+    return reasons
+
+
+def get_own_reminder(reminder_id, user_id):
+    """Returns the reminder only if it belongs to this user (so nobody can edit others' records)."""
+    if not reminder_id:
+        return None
+    return query_db('SELECT * FROM norm_reminders WHERE id = ? AND user_id = ?',
+                    (reminder_id, user_id), one=True)
+
+
+def check_before_saving(user_id, content, content_type, post_id, form_action, cancel_url):
+    """
+    The point-of-action reminder (DC20).
+
+    Returns None when the content may be saved now.
+    Returns a rendered reminder page when the user should look at it again first.
+    """
+    decision = request.form.get('decision')          # 'recheck', 'post_anyway' or None
+    reminder = get_own_reminder(request.form.get('reminder_id', type=int), user_id)
+    details = analyse_content(content)
+
+    # The user saw the reminder and chose to post anyway: respect the choice.
+    # The normal moderation still applies when the post is shown.
+    if reminder and decision == 'post_anyway':
+        query_db('UPDATE norm_reminders SET outcome = ?, score_after = ? WHERE id = ?',
+                 ('posted_anyway', details['score'], reminder['id']), commit=True)
+        return None
+
+    # Clean text: save it. If it was fixed after a reminder, record that success.
+    if details['score'] == 0:
+        if reminder:
+            query_db('UPDATE norm_reminders SET outcome = ?, score_after = 0 WHERE id = ?',
+                     ('edited_clean', reminder['id']), commit=True)
+        return None
+
+    # The text would be moderated: show the reminder (first time, or again after an edit).
+    if reminder:
+        query_db('UPDATE norm_reminders SET outcome = ?, score_after = ? WHERE id = ?',
+                 ('edited_still_flagged', details['score'], reminder['id']), commit=True)
+        reminder_id = reminder['id']
+    else:
+        cur = query_db('INSERT INTO norm_reminders (user_id, content_type, post_id, score_before) '
+                       'VALUES (?, ?, ?, ?)', (user_id, content_type, post_id, details['score']), commit=True)
+        reminder_id = cur.lastrowid
+
+    author = query_db('SELECT created_at FROM users WHERE id = ?', (user_id,), one=True)
+    is_new_account = author is not None and account_age_days(author['created_at']) < 7
+
+    return render_template('review_content.html.j2',
+                           content_type=content_type,
+                           original=content,
+                           preview=details['moderated'],
+                           removed=details['removed'],
+                           reasons=explain_moderation(details),
+                           is_new_account=is_new_account,
+                           reminder_id=reminder_id,
+                           form_action=form_action,
+                           cancel_url=url_for('cancel_reminder', reminder_id=reminder_id, next=cancel_url))
+
+
+@app.route('/reminders/<int:reminder_id>/cancel')
+def cancel_reminder(reminder_id):
+    """The user decided not to post after seeing the reminder."""
+    user_id = session.get('user_id')
+    if get_own_reminder(reminder_id, user_id):
+        # Only open reminders can be cancelled; finished ones keep their result.
+        query_db("UPDATE norm_reminders SET outcome = 'cancelled' "
+                 "WHERE id = ? AND outcome IN ('pending', 'edited_still_flagged')",
+                 (reminder_id,), commit=True)
+        flash('Okay, nothing was posted.', 'info')
+    next_url = request.args.get('next', '')
+    # Only allow redirects inside this site.
+    if not next_url.startswith('/') or next_url.startswith('//'):
+        next_url = url_for('feed')
+    return redirect(next_url)
+
+
+def reminder_statistics():
+    """Numbers for the admin dashboard: do reminders reduce offenses?"""
+    rows = query_db('SELECT outcome, COUNT(*) AS n FROM norm_reminders GROUP BY outcome') or []
+    counts = {row['outcome']: row['n'] for row in rows}
+    total = sum(counts.values())
+    fixed = counts.get('edited_clean', 0) + counts.get('cancelled', 0)
+    return {
+        'total': total,
+        'edited_clean': counts.get('edited_clean', 0),
+        'cancelled': counts.get('cancelled', 0),
+        'posted_anyway': counts.get('posted_anyway', 0),
+        'open': counts.get('pending', 0) + counts.get('edited_still_flagged', 0),
+        'prevented_pct': round(100 * fixed / total) if total else 0,
+    }
+
+
 # ----- Functions to be implemented are below
 # Coding Assignment #2
+
+# ----- Moderation helpers (Coding Assignment #2) -----
+
+REMOVED_SEVERE_TEXT = '[content removed due to severe violation]'
+REMOVED_SPAM_TEXT = '[content removed due to spam/scam policy]'
+
+def build_phrase_pattern(phrases):
+    """
+    Builds one search pattern that finds any word/phrase from the list,
+    ignoring upper/lower case, and only as a WHOLE word or phrase.
+    (?<!\\w) means "no letter or digit right before", (?!\\w) means "none right after".
+    So a bad word hidden inside a longer, normal word is NOT matched.
+    Longer phrases are tried first, so the longest match wins.
+    """
+    cleaned = sorted({p.strip() for p in phrases if p and p.strip()}, key=len, reverse=True)
+    if not cleaned:
+        return None
+    return re.compile(r'(?<!\w)(?:' + '|'.join(re.escape(p) for p in cleaned) + r')(?!\w)',
+                      re.IGNORECASE)
+
+# Built once when the app starts, so moderation stays fast.
+TIER1_PATTERN = build_phrase_pattern(TIER1_WORDS)
+TIER2_PATTERN = build_phrase_pattern(TIER2_PHRASES)
+TIER3_PATTERN = build_phrase_pattern(TIER3_WORDS)
+
+# A link starts with http://, https:// or www. and runs until the next space.
+URL_PATTERN = re.compile(r'(?:https?://|www\.)[^\s<>"]+', re.IGNORECASE)
+
+def account_age_days(created_at):
+    """How many whole days old an account is. Unknown dates count as old accounts."""
+    if created_at is None:
+        return 10**6
+    if isinstance(created_at, str):
+        try:
+            created_at = datetime.fromisoformat(created_at)
+        except ValueError:
+            return 10**6
+    return (datetime.utcnow() - created_at).days
+
 
 # Assignment 2.2
 def user_risk_analysis(user_id):
     """
+    Gives one user a risk score, following Rule 2.2 on the /rules page.
+
     Args:
         user_id: The ID of the user on which we perform risk analysis.
 
     Returns:
-        A float number score showing the risk associated with this user. There are no strict rules or bounds to this score, other than that a score of less than 1.0 means no risk, 1.0 to 3.0 is low risk, 3.0 to 5.0 is medium risk and above 5.0 is high risk. (An upper bound of 5.0 is applied to this score elsewhere in the codebase) 
-        
-        You will be able to check the scores by logging in with the administrator account:
-            username: admin
-            password: admin
-        Then, navigate to the /admin endpoint. (http://localhost:8080/admin)
+        A float between 0.0 and 5.0.
+        Below 1.0 = NONE, 1.0-2.99 = LOW, 3.0-4.99 = MEDIUM, 5.0 = HIGH.
+
+    Steps (same numbers as on the rules page):
+        1. profile_score         = content score of the profile text
+        2. average_post_score    = average content score of all the user's posts (0 if none)
+        3. average_comment_score = average content score of all the user's comments (0 if none)
+        4. content_risk_score    = profile * 1 + average post * 3 + average comment * 1
+        5. age multiplier        = x1.5 if the account is under 7 days old,
+                                   x1.2 if under 30 days, otherwise x1.0
+        6. cap the result at 5.0
+    Note: steps 1-3 use the plain content score from moderate_content().
+    The x1.5 rule for single posts (Rule 2.1) is NOT used here; step 5 handles account age.
     """
-    
-    score = 0
+    user = query_db('SELECT profile, created_at FROM users WHERE id = ?', (user_id,), one=True)
+    if user is None:
+        return 0.0
 
-    return score;
+    # Step 1: profile score (an empty profile scores 0)
+    _, profile_score = moderate_content(user['profile'] or '')
 
-    
+    # Step 2: average post score
+    posts = query_db('SELECT content FROM posts WHERE user_id = ?', (user_id,))
+    if posts:
+        average_post_score = sum(moderate_content(p['content'])[1] for p in posts) / len(posts)
+    else:
+        average_post_score = 0.0
+
+    # Step 3: average comment score
+    comments = query_db('SELECT content FROM comments WHERE user_id = ?', (user_id,))
+    if comments:
+        average_comment_score = sum(moderate_content(c['content'])[1] for c in comments) / len(comments)
+    else:
+        average_comment_score = 0.0
+
+    # Step 4: combine. Posts count three times as much as the profile or comments.
+    content_risk_score = (profile_score * 1) + (average_post_score * 3) + (average_comment_score * 1)
+
+    # Step 5: newer accounts get a higher multiplier
+    age_days = account_age_days(user['created_at'])
+    if age_days < 7:
+        user_risk_score = content_risk_score * 1.5
+    elif age_days < 30:
+        user_risk_score = content_risk_score * 1.2
+    else:
+        user_risk_score = content_risk_score
+
+    # Step 6: never higher than 5.0
+    return min(5.0, user_risk_score)
+
+
 # Assignment 2.1
 def moderate_content(content):
     """
-    Args
-        content: the text content of a post or comment to be moderated.
-        
-    Returns: 
-        A tuple containing the moderated content (string) and a severity score (float). There are no strict rules or bounds to the severity score, other than that a score of less than 1.0 means no risk, 1.0 to 3.0 is low risk, 3.0 to 5.0 is medium risk and above 5.0 is high risk.
-    
-    This function moderates a string of content and calculates a severity score based on
-    rules loaded from the 'censorship.dat' file. These are already loaded as TIER1_WORDS, TIER2_PHRASES and TIER3_WORDS. Tier 1 corresponds to strong profanity, Tier 2 to scam/spam phrases and Tier 3 to mild profanity.
-    
-    You will be able to check the scores by logging in with the administrator account:
-            username: admin
-            password: admin
-    Then, navigate to the /admin endpoint. (http://localhost:8080/admin)
-    """
+    Moderates one post, comment or profile text, following Part 1 of the /rules page.
 
-    moderated_content = content
-    score = 0
-    
-    return moderated_content, score
+    Args
+        content: the text content of a post, comment or profile.
+
+    Returns:
+        A tuple (moderated_content, score).
+        moderated_content is the text other users will see.
+        score is the Content Score (0.0 = clean, 5.0 = removed).
+
+    The real work is done in analyse_content() below, which also returns the
+    details (which rules were broken). The design-claim feature uses those details.
+    """
+    result = analyse_content(content)
+    return result['moderated'], result['score']
+
+
+def analyse_content(content):
+    """
+    Applies the moderation rules and remembers which rules were broken.
+
+    Returns a dict:
+        moderated  - the text after filtering
+        score      - the Content Score
+        removed    - None, 'severe' (Tier 1) or 'spam' (Tier 2)
+        tier3      - how many mild bad words were masked
+        links      - how many links were removed
+        caps       - True if the text is mostly CAPITALS
+    """
+    result = {'moderated': content or '', 'score': 0.0,
+              'removed': None, 'tier3': 0, 'links': 0, 'caps': False}
+    if not content:
+        return result
+
+    # Stage 1.1 - severe checks. A match removes the whole text and stops here.
+    # Rule 1.1.1: Tier 1 word (whole word, any case)
+    if TIER1_PATTERN and TIER1_PATTERN.search(content):
+        result.update(moderated=REMOVED_SEVERE_TEXT, score=5.0, removed='severe')
+        return result
+    # Rule 1.1.2: Tier 2 spam/scam phrase (whole phrase, any case)
+    if TIER2_PATTERN and TIER2_PATTERN.search(content):
+        result.update(moderated=REMOVED_SPAM_TEXT, score=5.0, removed='spam')
+        return result
+
+    # Stage 1.2 - scored checks. The score starts at 0.0.
+    moderated = content
+    score = 0.0
+
+    # Rule 1.2.1: each Tier 3 word -> same number of asterisks, +2.0 each
+    if TIER3_PATTERN:
+        moderated, tier3_count = TIER3_PATTERN.subn(lambda m: '*' * len(m.group(0)), moderated)
+        score += 2.0 * tier3_count
+        result['tier3'] = tier3_count
+
+    # Rule 1.2.2: each link -> "[link removed]", +2.0 each
+    moderated, link_count = URL_PATTERN.subn('[link removed]', moderated)
+    score += 2.0 * link_count
+    result['links'] = link_count
+
+    # Rule 1.2.3: more than 15 letters and over 70% of them CAPITALS -> +0.5 (text unchanged)
+    # We count letters in the original text, so "[link removed]" does not change the count.
+    letters = [ch for ch in content if ch.isalpha()]
+    if len(letters) > 15:
+        upper_share = sum(1 for ch in letters if ch.isupper()) / len(letters)
+        if upper_share > 0.7:
+            score += 0.5
+            result['caps'] = True
+
+    result['moderated'] = moderated
+    result['score'] = score
+    return result
 
 # Coding Assignment #3
 # Assignment 3.1
