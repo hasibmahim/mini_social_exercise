@@ -1,0 +1,73 @@
+{% extends "base.html.j2" %}
+{# Coding Assignment #1, feature 2: weekly goal (Chapter 2, Design Claims 13 and 15).
+   Shows progress for this week, a comparison with other members, and lets the
+   user take the suggested goal or set their own. #}
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-lg-8">
+
+    <div class="card mb-4">
+      <div class="card-header"><h4 class="mb-0">Your weekly goal</h4></div>
+      <div class="card-body">
+        {% if goal.has_goal %}
+          <p class="mb-2">This week (since Monday) you wrote:</p>
+          <div class="mb-1">Posts: <strong>{{ goal.posts_done }} of {{ goal.posts_goal }}</strong></div>
+          <div class="progress mb-3" role="progressbar" aria-label="Posts this week" aria-valuenow="{{ goal.posts_pct }}" aria-valuemin="0" aria-valuemax="100">
+            <div class="progress-bar {% if goal.posts_pct >= 100 %}bg-success{% endif %}" style="width: {{ goal.posts_pct }}%"></div>
+          </div>
+          <div class="mb-1">Comments: <strong>{{ goal.comments_done }} of {{ goal.comments_goal }}</strong></div>
+          <div class="progress mb-3" role="progressbar" aria-label="Comments this week" aria-valuenow="{{ goal.comments_pct }}" aria-valuemin="0" aria-valuemax="100">
+            <div class="progress-bar {% if goal.comments_pct >= 100 %}bg-success{% endif %}" style="width: {{ goal.comments_pct }}%"></div>
+          </div>
+          {% if goal.reached %}
+            <div class="alert alert-success mb-0">You reached your goal for this week. Well done!</div>
+          {% else %}
+            <p class="text-muted mb-0">{{ goal.days_left }} day(s) left this week. Every post and comment counts.</p>
+          {% endif %}
+        {% else %}
+          <p class="mb-0">You have no goal yet. A clear goal that is a bit hard helps people take part more.</p>
+        {% endif %}
+
+        <h6 class="mt-4">How you compare</h6>
+        <ul class="mb-0">
+          <li>Your usual week: <strong>{{ goal.usual_posts }}</strong> posts and <strong>{{ goal.usual_comments }}</strong> comments (in weeks when you were active).</li>
+          <li>A typical member posts <strong>{{ goal.community_avg }}</strong> times in an active week.</li>
+          {% if goal.ahead_pct > 0 %}
+          <li>With <strong>{{ goal.posts_done }}</strong> post(s) this week, you are ahead of <strong>{{ goal.ahead_pct }}%</strong> of members' usual week.</li>
+          {% endif %}
+          {% if goal.posts_to_pass > 0 %}
+          <li>Write <strong>{{ goal.posts_to_pass }}</strong> more post(s) this week to pass the usual week of a typical member.</li>
+          {% endif %}
+        </ul>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">{% if goal.has_goal %}Change your goal{% else %}Set your goal{% endif %}</div>
+      <div class="card-body">
+        <form method="POST" class="mb-3">
+          <input type="hidden" name="use_suggestion" value="1">
+          <button type="submit" class="btn btn-primary">Take the suggested goal: {{ goal.suggested_posts }} posts and {{ goal.suggested_comments }} comments</button>
+          <div class="form-text">About 50% more than your usual week. Hard, but possible.</div>
+        </form>
+        <form method="POST" class="row g-2 align-items-end">
+          <div class="col-sm-4">
+            <label class="form-label" for="posts_goal">Posts per week</label>
+            <input type="number" min="1" max="50" class="form-control" id="posts_goal" name="posts_goal"
+                   value="{{ goal.posts_goal if goal.has_goal else goal.suggested_posts }}" required>
+          </div>
+          <div class="col-sm-4">
+            <label class="form-label" for="comments_goal">Comments per week</label>
+            <input type="number" min="1" max="100" class="form-control" id="comments_goal" name="comments_goal"
+                   value="{{ goal.comments_goal if goal.has_goal else goal.suggested_comments }}" required>
+          </div>
+          <div class="col-sm-4">
+            <button type="submit" class="btn btn-secondary w-100">Save my own goal</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+  </div>
+</div>
+{% endblock %}

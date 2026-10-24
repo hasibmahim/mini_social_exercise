@@ -4,7 +4,19 @@ This is a mock social media platform created for the Social Computing course at 
 
 ## My coursework (Syed Amin Al Mahim, Social Computing 2026-2027)
 
-My coding assignments are in this fork. In `app.py`, search for "Coding Assignment #2" to find my code. The new database table `norm_reminders` is created automatically when the app starts.
+All my coding assignments are in this fork. In `app.py`, search for "Coding Assignment #1" or "Coding Assignment #2" to find each part. New database tables are created automatically when the app starts.
+
+### Coding Assignment 1: Contribution and Commitment
+
+| Feature | Design claim | Where in the code |
+|---|---|---|
+| **Waiting for you**: posts from people you follow that still need your reaction or comment, with a counter | Chapter 2, Design Claim 1 | `app.py`: `waiting_count()`, `waiting_posts()`, the `waiting` sort in `feed()` |
+| **Weekly goal**: a suggested goal that is a bit hard, progress bars, and feedback after every post or comment | Chapter 2, Design Claims 13 and 15 | `app.py`: `suggest_goal()`, `goal_status()`, `goal_feedback()`, `weekly_goal()` (`/goals`); `templates/goals.html.j2` |
+| **What the community gave you**: what you received from others, with a **Return the favour** button for each person | Chapter 3, Design Claims 30 and 31 | `app.py`: `received_totals()`, `top_supporters()`, `community_received()` (`/received`), `return_favour()`; `templates/received.html.j2` |
+
+The three cards are at the top of the feed (`templates/feed.html.j2`). The menu links are in `templates/base.html.j2`.
+
+**Try it:** log in, follow a few people, and look at the three cards at the top of the feed. The user menu has "Weekly goal" and "What I received".
 
 ### Coding Assignment 2: Moderation
 

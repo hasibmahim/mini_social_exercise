@@ -20,6 +20,84 @@
     </div>
   </div>
 </div>
+
+<!-- Coding Assignment #1: three cards for the logged-in user -->
+<div class="col-md-8 mx-auto mb-4">
+
+  <!-- Feature 1 (Chapter 2, Design Claim 1): needed contributions, shown first on the front page -->
+  {% if current_sort != 'waiting' and page == 1 %}
+  <div class="card mb-3" id="waiting-card">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <span>Waiting for you</span>
+      <span class="badge bg-primary">{{ waiting_total }}</span>
+    </div>
+    <div class="card-body">
+    {% if waiting_total %}
+      <p class="mb-2"><strong>{{ waiting_total }}</strong> posts from people you follow have no reaction or comment from you yet. Your reply helps them.</p>
+      <ul class="list-group mb-2">
+        {% for item in waiting_preview %}
+        <li class="list-group-item d-flex justify-content-between align-items-center">
+          <span class="text-truncate me-2"><strong>@{{ item.username }}</strong>: {{ item.content }}</span>
+          <a href="{{ url_for('post_detail', post_id=item.id) }}" class="btn btn-primary btn-sm">Reply</a>
+        </li>
+        {% endfor %}
+      </ul>
+      <a href="{{ url_for('feed', sort='waiting') }}" class="btn btn-secondary btn-sm">See all {{ waiting_total }}</a>
+    {% else %}
+      <p class="mb-0">You are all caught up with the people you follow. Follow more people to see their new posts here.</p>
+    {% endif %}
+    </div>
+  </div>
+  {% endif %}
+
+  <div class="row g-3">
+    <!-- Feature 2 (Chapter 2, Design Claims 13 and 15): weekly goal with progress bars -->
+    <div class="col-md-6">
+      <div class="card h-100" id="goal-card">
+        <div class="card-header">Your weekly goal</div>
+        <div class="card-body">
+        {% if goal.has_goal %}
+          <div class="small mb-1">Posts: <strong>{{ goal.posts_done }}/{{ goal.posts_goal }}</strong></div>
+          <div class="progress mb-2" role="progressbar" aria-label="Posts this week" aria-valuenow="{{ goal.posts_pct }}" aria-valuemin="0" aria-valuemax="100">
+            <div class="progress-bar {% if goal.posts_pct >= 100 %}bg-success{% endif %}" style="width: {{ goal.posts_pct }}%"></div>
+          </div>
+          <div class="small mb-1">Comments: <strong>{{ goal.comments_done }}/{{ goal.comments_goal }}</strong></div>
+          <div class="progress mb-2" role="progressbar" aria-label="Comments this week" aria-valuenow="{{ goal.comments_pct }}" aria-valuemin="0" aria-valuemax="100">
+            <div class="progress-bar {% if goal.comments_pct >= 100 %}bg-success{% endif %}" style="width: {{ goal.comments_pct }}%"></div>
+          </div>
+          <div class="small text-muted">
+            {% if goal.reached %}Goal reached this week!{% else %}{{ goal.days_left }} day(s) left this week.{% endif %}
+            <a href="{{ url_for('weekly_goal') }}">Details</a>
+          </div>
+        {% else %}
+          <p class="small mb-2">Set a goal for this week. Suggested for you: <strong>{{ goal.suggested_posts }} posts and {{ goal.suggested_comments }} comments</strong>, about 50% more than your usual week.</p>
+          <form action="{{ url_for('weekly_goal') }}" method="POST" class="d-inline">
+            <input type="hidden" name="use_suggestion" value="1">
+            <input type="hidden" name="next" value="{{ url_for('feed') }}">
+            <button type="submit" class="btn btn-primary btn-sm">Take this goal</button>
+          </form>
+          <a href="{{ url_for('weekly_goal') }}" class="btn btn-secondary btn-sm">Choose my own</a>
+        {% endif %}
+        </div>
+      </div>
+    </div>
+
+    <!-- Feature 3 (Chapter 3, Design Claim 30): what the community gave you -->
+    <div class="col-md-6">
+      <div class="card h-100" id="received-card">
+        <div class="card-header">What the community gave you</div>
+        <div class="card-body">
+        {% if received.reactions or received.comments %}
+          <p class="mb-2"><strong>{{ received.reactions }}</strong> reactions and <strong>{{ received.comments }}</strong> comments on your posts so far.</p>
+          <a href="{{ url_for('community_received') }}" class="btn btn-primary btn-sm">See who helped you</a>
+        {% else %}
+          <p class="small mb-0">Nothing yet. When people react to or comment on your posts, you will see it here.</p>
+        {% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
 {% endif %}
 
 <h2 class="text-center border-bottom pb-2 mb-4"><span>Posts</span></h2>
@@ -32,6 +110,10 @@
     <a href="{{ url_for('feed', sort='new', show=current_show) }}" class="btn {% if current_sort == 'new' %}btn-primary{% else %}btn-light{% endif %}">New</a>
     <a href="{{ url_for('feed', sort='popular', show=current_show) }}" class="btn {% if current_sort == 'popular' %}btn-primary{% else %}btn-light{% endif %}">Popular</a>
     <a href="{{ url_for('feed', sort='recommended', show=current_show) }}" class="btn {% if current_sort == 'recommended' %}btn-primary{% else %}btn-light{% endif %}">Recommended</a>
+    {% if session.get('user_id') %}
+    <!-- Coding Assignment #1, feature 1: only the posts that need your reply -->
+    <a href="{{ url_for('feed', sort='waiting', show=current_show) }}" class="btn {% if current_sort == 'waiting' %}btn-primary{% else %}btn-light{% endif %}">Waiting for you ({{ waiting_total }})</a>
+    {% endif %}
   </div>
 
   <!-- This is the 'show' filter for All / Following -->
@@ -76,6 +158,9 @@
         {% endif %}
       </div>
       
+      {% if current_sort == 'waiting' %}
+      <div class="small text-primary mt-1">You follow @{{ entry.post.username }} and have not replied yet. React or comment to help.</div>
+      {% endif %}
       <p class="mt-2">{{ entry.post.content }}</p>
 
       <!-- Reactions Display and Add Reaction Button -->

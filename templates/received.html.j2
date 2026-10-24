@@ -1,0 +1,74 @@
+{% extends "base.html.j2" %}
+{# Coding Assignment #1, feature 3: what the community gave you
+   (Chapter 3, Design Claim 30: show members what they received),
+   with "Return the favour" buttons (Chapter 3, Design Claim 31). #}
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-lg-9">
+    <h2 class="mb-3">What the community gave you</h2>
+
+    <div class="row g-3 mb-3">
+      <div class="col-sm-4">
+        <div class="card text-center h-100"><div class="card-body">
+          <div class="display-6">{{ totals.reactions }}</div>
+          <div class="text-muted">reactions on your posts</div>
+        </div></div>
+      </div>
+      <div class="col-sm-4">
+        <div class="card text-center h-100"><div class="card-body">
+          <div class="display-6">{{ totals.comments }}</div>
+          <div class="text-muted">comments on your posts</div>
+        </div></div>
+      </div>
+      <div class="col-sm-4">
+        <div class="card text-center h-100"><div class="card-body">
+          <div class="display-6">{{ people }}</div>
+          <div class="text-muted">different people helped you · {{ followers }} follow you</div>
+        </div></div>
+      </div>
+    </div>
+
+    {% if by_type %}
+    <p class="mb-3">
+      {% for row in by_type %}
+        <span class="me-3">{{ reaction_emojis.get('laugh' if row.reaction_type == 'haha' else row.reaction_type, '👍') }} {{ row.n }}</span>
+      {% endfor %}
+    </p>
+    {% endif %}
+
+    {% if best_post %}
+    <div class="card mb-4">
+      <div class="card-body">
+        <h6 class="mb-1">Your most loved post ({{ best_post.n }} reactions)</h6>
+        <p class="mb-1">{{ best_post.content }}</p>
+        <a href="{{ url_for('post_detail', post_id=best_post.id) }}">Open it</a>
+      </div>
+    </div>
+    {% endif %}
+
+    <div class="card">
+      <div class="card-header">The people who supported you most</div>
+      <ul class="list-group list-group-flush">
+        {% for person in supporters %}
+        <li class="list-group-item d-flex justify-content-between align-items-center">
+          <div>
+            <a href="{{ url_for('user_profile', username=person.username) }}">@{{ person.username }}</a>
+            <div class="small text-muted">
+              gave you {{ person.reactions }} reaction(s) and {{ person.comments }} comment(s) · you gave back {{ person.given_back }}
+            </div>
+          </div>
+          {% if person.open_post %}
+            <a href="{{ url_for('return_favour', supporter_id=person.id) }}" class="btn btn-primary btn-sm">Return the favour</a>
+          {% else %}
+            <span class="badge bg-success">All returned</span>
+          {% endif %}
+        </li>
+        {% else %}
+        <li class="list-group-item">Nobody yet. Write a post, and the community will answer.</li>
+        {% endfor %}
+      </ul>
+    </div>
+
+  </div>
+</div>
+{% endblock %}

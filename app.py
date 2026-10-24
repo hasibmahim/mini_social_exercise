@@ -6,7 +6,8 @@ import json
 import sqlite3
 import hashlib
 import re
-from datetime import datetime
+import math
+from datetime import datetime, timedelta
 
 app = Flask(__name__)
 app.secret_key = '123456789' 
@@ -138,7 +139,12 @@ def feed():
         posts = query_db(query, final_params)
     elif sort == 'recommended':
         posts = recommend(current_user_id, show == 'following' and current_user_id)
+    elif sort == 'waiting' and current_user_id:
+        # Coding Assignment #1, feature 1 (Ch2 DC1): only the posts from people
+        # you follow that still need your reaction or comment, newest first.
+        posts = waiting_posts(current_user_id, POSTS_PER_PAGE, offset)
     else:  # Default sort is 'new'
+        sort = 'new'  # also used when a logged-out visitor asks for 'waiting'
         query = f"""
             SELECT p.id, p.content, p.created_at, u.username, u.id as user_id
             FROM posts p
@@ -191,6 +197,18 @@ def feed():
             'comments': comments_moderated
         })
 
+    #  Coding Assignment #1: data for the three new feed cards (logged-in users only)
+    waiting_total, waiting_preview, goal, received = 0, [], None, None
+    if current_user_id:
+        waiting_total = waiting_count(current_user_id)            # feature 1 (Ch2 DC1)
+        if sort != 'waiting' and page == 1:
+            for row in waiting_posts(current_user_id, 3):          # first 3, shown at the top
+                preview = dict(row)
+                preview['content'], _ = moderate_content(preview['content'])
+                waiting_preview.append(preview)
+        goal = goal_status(current_user_id)                       # feature 2 (Ch2 DC13, DC15)
+        received = received_totals(current_user_id)               # feature 3 (Ch3 DC30)
+
     #  4. Render Template with Pagination Info 
     return render_template('feed.html.j2', 
                            posts=posts_data, 
@@ -199,7 +217,11 @@ def feed():
                            page=page, # Pass current page number
                            per_page=POSTS_PER_PAGE, # Pass items per page
                            reaction_emojis=REACTION_EMOJIS,
-                           reaction_types=REACTION_TYPES)
+                           reaction_types=REACTION_TYPES,
+                           waiting_total=waiting_total,
+                           waiting_preview=waiting_preview,
+                           goal=goal,
+                           received=received)
 
 @app.route('/posts/new', methods=['POST'])
 def add_post():
@@ -233,7 +255,7 @@ def add_post():
     db.execute('INSERT INTO posts (user_id, content) VALUES (?, ?)',
                (user_id, content))
     db.commit()
-    flash('Your post was successfully created!', 'success')
+    flash('Your post was successfully created!' + goal_feedback(user_id, 'post'), 'success')
 
     # Redirect back to the main feed to see the new post
     return redirect(url_for('feed'))
@@ -515,7 +537,7 @@ def add_comment(post_id):
     db.execute('INSERT INTO comments (post_id, user_id, content) VALUES (?, ?, ?)',
                (post_id, user_id, content))
     db.commit()
-    flash('Your comment was added.', 'success')
+    flash('Your comment was added.' + goal_feedback(user_id, 'comment'), 'success')
 
     # Go back to where the user came from. After a reminder page, go to the post itself.
     if request.form.get('reminder_id'):
@@ -882,6 +904,335 @@ def loop_color(user_id):
     g = int(h[2:4], 16)
     b = int(h[4:6], 16)
     return f'rgb({r % 128 + 80}, {g % 128 + 80}, {b % 128 + 80})'
+
+
+# ----- Coding Assignment #1: Contribution and Commitment -----
+# Three new features. Each one implements design claims from the course book
+# (Kraut & Resnick, "Building Successful Online Communities").
+#
+# 1. "Waiting for you" - Chapter 2, Design Claim 1:
+#    "Making the list of needed contributions easily visible increases the
+#     likelihood that the community will provide them."
+#    Here a needed contribution = a reaction or a comment on a post from someone
+#    you follow. Posts you have not answered yet are shown first, with a counter.
+#
+# 2. "Weekly goal" - Chapter 2, Design Claims 13 and 15:
+#    specific and challenging goals increase contribution (DC13), and goals work
+#    better with frequent feedback (DC15). The user sets a weekly goal (or takes
+#    the suggested one), sees progress bars and gets feedback after every post
+#    or comment. A comparison with other members shows how the week is going.
+#
+# 3. "What the community gave you" - Chapter 3, Design Claims 30 and 31:
+#    showing people what they have received from the community increases their
+#    normative commitment (DC30), and highlighting chances to return favours to
+#    specific people increases it too (DC31).
+
+# Reactions that count as support. The seed data uses 'haha', the UI uses 'laugh'.
+POSITIVE_REACTIONS = ('like', 'love', 'laugh', 'haha', 'wow')
+POSITIVE_SQL = "('like', 'love', 'laugh', 'haha', 'wow')"   # the same list, for SQL
+
+
+def create_goal_table():
+    """Creates the weekly_goals table once, if it does not exist yet."""
+    with sqlite3.connect(DATABASE) as db:
+        db.execute('''
+            CREATE TABLE IF NOT EXISTS weekly_goals (
+                user_id          INTEGER PRIMARY KEY,
+                posts_goal       INTEGER NOT NULL,
+                comments_goal    INTEGER NOT NULL,
+                took_suggestion  INTEGER NOT NULL DEFAULT 0,   -- 1 = the user took the suggested goal
+                updated_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
+            )''')
+
+create_goal_table()
+
+
+def safe_next_url(url, fallback):
+    """Only allow redirects inside this site."""
+    if url and url.startswith('/') and not url.startswith('//'):
+        return url
+    return fallback
+
+
+# --- Feature 1: "Waiting for you" (Chapter 2, Design Claim 1) ---
+
+# Posts written by people the user follows, which the user has not reacted to
+# and has not commented on yet. The four ? are all the current user's id.
+WAITING_FROM_WHERE = '''
+    FROM posts p
+    JOIN users u ON p.user_id = u.id
+    WHERE p.user_id IN (SELECT followed_id FROM follows WHERE follower_id = ?)
+      AND p.user_id != ?
+      AND NOT EXISTS (SELECT 1 FROM reactions r WHERE r.post_id = p.id AND r.user_id = ?)
+      AND NOT EXISTS (SELECT 1 FROM comments c WHERE c.post_id = p.id AND c.user_id = ?)
+'''
+
+
+def waiting_count(user_id):
+    """How many posts are still waiting for this user's reaction or comment."""
+    row = query_db('SELECT COUNT(*) AS n ' + WAITING_FROM_WHERE, (user_id,) * 4, one=True)
+    return row['n'] if row else 0
+
+
+def waiting_posts(user_id, limit, offset=0):
+    """The waiting posts, newest first, with the same columns as the normal feed."""
+    rows = query_db('SELECT p.id, p.content, p.created_at, u.username, u.id AS user_id '
+                    + WAITING_FROM_WHERE + ' ORDER BY p.created_at DESC LIMIT ? OFFSET ?',
+                    (user_id,) * 4 + (limit, offset))
+    return rows or []
+
+
+# --- Feature 2: "Weekly goal" (Chapter 2, Design Claims 13 and 15) ---
+
+def start_of_week():
+    """Monday 00:00 of this week as text, in the same format (UTC) as the database."""
+    today = datetime.utcnow().date()
+    monday = today - timedelta(days=today.weekday())
+    return monday.strftime('%Y-%m-%d 00:00:00')
+
+
+def count_this_week(user_id):
+    """How many posts and comments the user has written since Monday."""
+    since = start_of_week()
+    posts = query_db('SELECT COUNT(*) AS n FROM posts WHERE user_id = ? AND created_at >= ?',
+                     (user_id, since), one=True)['n']
+    comments = query_db('SELECT COUNT(*) AS n FROM comments WHERE user_id = ? AND created_at >= ?',
+                        (user_id, since), one=True)['n']
+    return posts, comments
+
+
+def usual_week(user_id):
+    """The user's usual week: average posts and comments per week in which they were active."""
+    def per_active_week(table):
+        # table is always 'posts' or 'comments' (fixed names, never user input)
+        row = query_db(f"SELECT COUNT(*) AS n, COUNT(DISTINCT strftime('%Y-%W', created_at)) AS weeks "
+                       f"FROM {table} WHERE user_id = ?", (user_id,), one=True)
+        return row['n'] / row['weeks'] if row and row['weeks'] else 0.0
+    return per_active_week('posts'), per_active_week('comments')
+
+
+def suggest_goal(user_id):
+    """
+    A specific and challenging goal (DC13): about 50% more than the user's usual
+    week, but at least 2 posts and 5 comments, so new users also get a real goal.
+    """
+    usual_posts, usual_comments = usual_week(user_id)
+    posts_goal = min(20, max(2, math.ceil(usual_posts * 1.5)))
+    comments_goal = min(50, max(5, math.ceil(usual_comments * 1.5)))
+    return posts_goal, comments_goal
+
+
+def compare_with_members(posts_this_week):
+    """
+    Comparative feedback. Looks at the usual week of every member who has posted
+    (posts per active week) and returns:
+      - ahead_pct:     share of members whose usual week has fewer posts than this week
+      - average:       the average usual week
+      - posts_to_pass: how many more posts this user needs to pass a typical (median) member
+    """
+    rows = query_db("SELECT COUNT(*) * 1.0 / COUNT(DISTINCT strftime('%Y-%W', created_at)) AS per_week "
+                    "FROM posts GROUP BY user_id") or []
+    if not rows:
+        return 0, 0.0, 0
+    weeks = sorted(row['per_week'] for row in rows)
+    behind = sum(1 for value in weeks if value < posts_this_week)
+    median = weeks[len(weeks) // 2]
+    posts_to_pass = max(0, math.floor(median) + 1 - posts_this_week)
+    return round(100 * behind / len(weeks)), round(sum(weeks) / len(weeks), 1), posts_to_pass
+
+
+def goal_status(user_id):
+    """Everything the goal card and the goal page need, in one dictionary."""
+    goal = query_db('SELECT * FROM weekly_goals WHERE user_id = ?', (user_id,), one=True)
+    posts_done, comments_done = count_this_week(user_id)
+    suggested_posts, suggested_comments = suggest_goal(user_id)
+    usual_posts, usual_comments = usual_week(user_id)
+    ahead_pct, community_avg, posts_to_pass = compare_with_members(posts_done)
+    status = {
+        'has_goal': goal is not None,
+        'posts_done': posts_done,
+        'comments_done': comments_done,
+        'suggested_posts': suggested_posts,
+        'suggested_comments': suggested_comments,
+        'usual_posts': round(usual_posts, 1),
+        'usual_comments': round(usual_comments, 1),
+        'ahead_pct': ahead_pct,
+        'community_avg': community_avg,
+        'posts_to_pass': posts_to_pass,
+        'days_left': 7 - datetime.utcnow().weekday(),   # today counts as a day left
+    }
+    if goal:
+        status.update({
+            'posts_goal': goal['posts_goal'],
+            'comments_goal': goal['comments_goal'],
+            'posts_pct': min(100, round(100 * posts_done / goal['posts_goal'])),
+            'comments_pct': min(100, round(100 * comments_done / goal['comments_goal'])),
+            'reached': posts_done >= goal['posts_goal'] and comments_done >= goal['comments_goal'],
+        })
+    return status
+
+
+def goal_feedback(user_id, kind):
+    """
+    A short progress line added to the message after a new post or comment.
+    This is the frequent feedback of Design Claim 15. Empty if there is no goal.
+    """
+    goal = query_db('SELECT posts_goal, comments_goal FROM weekly_goals WHERE user_id = ?',
+                    (user_id,), one=True)
+    if not goal:
+        return ''
+    posts_done, comments_done = count_this_week(user_id)
+    if kind == 'post':
+        done, target, word = posts_done, goal['posts_goal'], 'posts'
+    else:
+        done, target, word = comments_done, goal['comments_goal'], 'comments'
+    if done == target:
+        return f' You reached your weekly goal of {target} {word}!'
+    if done > target:
+        return f' Weekly goal: {done}/{target} {word}. You are above your goal.'
+    return f' Weekly goal: {done}/{target} {word}.'
+
+
+@app.route('/goals', methods=['GET', 'POST'])
+def weekly_goal():
+    """Shows the weekly goal page, and saves a new goal."""
+    user_id = session.get('user_id')
+    if not user_id:
+        flash('You must be logged in to set a goal.', 'danger')
+        return redirect(url_for('login'))
+
+    if request.method == 'POST':
+        if request.form.get('use_suggestion'):
+            posts_goal, comments_goal = suggest_goal(user_id)
+            took_suggestion = 1
+        else:
+            posts_goal = request.form.get('posts_goal', type=int)
+            comments_goal = request.form.get('comments_goal', type=int)
+            took_suggestion = 0
+            if not posts_goal or not comments_goal or not (1 <= posts_goal <= 50) \
+                    or not (1 <= comments_goal <= 100):
+                flash('Please choose 1-50 posts and 1-100 comments.', 'warning')
+                return redirect(url_for('weekly_goal'))
+        # Insert the goal, or update it if the user already has one
+        query_db('INSERT INTO weekly_goals (user_id, posts_goal, comments_goal, took_suggestion) '
+                 'VALUES (?, ?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET '
+                 'posts_goal = excluded.posts_goal, comments_goal = excluded.comments_goal, '
+                 'took_suggestion = excluded.took_suggestion, updated_at = CURRENT_TIMESTAMP',
+                 (user_id, posts_goal, comments_goal, took_suggestion), commit=True)
+        flash(f'Your weekly goal is set: {posts_goal} posts and {comments_goal} comments.', 'success')
+        return redirect(safe_next_url(request.form.get('next'), url_for('weekly_goal')))
+
+    return render_template('goals.html.j2', goal=goal_status(user_id))
+
+
+# --- Feature 3: "What the community gave you" (Chapter 3, Design Claims 30 and 31) ---
+
+def received_totals(user_id):
+    """Reactions and comments that OTHER people gave to this user's posts."""
+    reactions = query_db('SELECT COUNT(*) AS n FROM reactions r JOIN posts p ON r.post_id = p.id '
+                         'WHERE p.user_id = ? AND r.user_id != ?', (user_id, user_id), one=True)['n']
+    comments = query_db('SELECT COUNT(*) AS n FROM comments c JOIN posts p ON c.post_id = p.id '
+                        'WHERE p.user_id = ? AND c.user_id != ?', (user_id, user_id), one=True)['n']
+    return {'reactions': reactions, 'comments': comments}
+
+
+def next_post_to_return(user_id, supporter_id):
+    """The supporter's newest post that this user has not reacted to yet (a favour to return)."""
+    row = query_db('SELECT id FROM posts WHERE user_id = ? AND id NOT IN '
+                   '(SELECT post_id FROM reactions WHERE user_id = ?) ORDER BY created_at DESC LIMIT 1',
+                   (supporter_id, user_id), one=True)
+    return row['id'] if row else None
+
+
+def top_supporters(user_id, limit=8):
+    """
+    The people who supported this user most (positive reactions + comments on
+    their posts), and how much this user has given back to each of them.
+    """
+    rows = query_db(f'''
+        SELECT u.id, u.username,
+               SUM(s.kind = 'reaction') AS reactions,
+               SUM(s.kind = 'comment')  AS comments
+        FROM (
+            SELECT r.user_id AS supporter, 'reaction' AS kind
+            FROM reactions r JOIN posts p ON r.post_id = p.id
+            WHERE p.user_id = ? AND r.user_id != ? AND r.reaction_type IN {POSITIVE_SQL}
+            UNION ALL
+            SELECT c.user_id, 'comment'
+            FROM comments c JOIN posts p ON c.post_id = p.id
+            WHERE p.user_id = ? AND c.user_id != ?
+        ) s
+        JOIN users u ON u.id = s.supporter
+        GROUP BY u.id
+        ORDER BY reactions + comments DESC, u.username
+        LIMIT ?''', (user_id, user_id, user_id, user_id, limit)) or []
+
+    supporters = []
+    for row in rows:
+        person = dict(row)
+        # How often this user already reacted to or commented on the supporter's posts
+        person['given_back'] = query_db('''
+            SELECT (SELECT COUNT(*) FROM reactions r JOIN posts p ON r.post_id = p.id
+                    WHERE p.user_id = ? AND r.user_id = ?)
+                 + (SELECT COUNT(*) FROM comments c JOIN posts p ON c.post_id = p.id
+                    WHERE p.user_id = ? AND c.user_id = ?) AS n''',
+            (person['id'], user_id, person['id'], user_id), one=True)['n']
+        person['open_post'] = next_post_to_return(user_id, person['id'])
+        supporters.append(person)
+    return supporters
+
+
+@app.route('/received')
+def community_received():
+    """The 'What the community gave you' page (DC30), with 'Return the favour' buttons (DC31)."""
+    user_id = session.get('user_id')
+    if not user_id:
+        flash('You must be logged in to see this page.', 'danger')
+        return redirect(url_for('login'))
+
+    totals = received_totals(user_id)
+    by_type = query_db('SELECT r.reaction_type, COUNT(*) AS n FROM reactions r '
+                       'JOIN posts p ON r.post_id = p.id WHERE p.user_id = ? AND r.user_id != ? '
+                       'GROUP BY r.reaction_type ORDER BY n DESC', (user_id, user_id)) or []
+    people = query_db('SELECT COUNT(*) AS n FROM ('
+                      ' SELECT r.user_id FROM reactions r JOIN posts p ON r.post_id = p.id'
+                      ' WHERE p.user_id = ? AND r.user_id != ?'
+                      ' UNION'
+                      ' SELECT c.user_id FROM comments c JOIN posts p ON c.post_id = p.id'
+                      ' WHERE p.user_id = ? AND c.user_id != ?)', (user_id,) * 4, one=True)['n']
+    followers = query_db('SELECT COUNT(*) AS n FROM follows WHERE followed_id = ?',
+                         (user_id,), one=True)['n']
+    best = query_db('SELECT p.id, p.content, COUNT(r.id) AS n FROM posts p '
+                    'JOIN reactions r ON r.post_id = p.id AND r.user_id != p.user_id '
+                    'WHERE p.user_id = ? GROUP BY p.id ORDER BY n DESC LIMIT 1', (user_id,), one=True)
+    best_post = None
+    if best:
+        best_post = dict(best)
+        best_post['content'], _ = moderate_content(best_post['content'])
+
+    return render_template('received.html.j2', totals=totals, by_type=by_type, people=people,
+                           followers=followers, best_post=best_post,
+                           supporters=top_supporters(user_id),
+                           reaction_emojis=REACTION_EMOJIS)
+
+
+@app.route('/received/return/<int:supporter_id>')
+def return_favour(supporter_id):
+    """Opens the supporter's newest post that the user has not reacted to yet (DC31)."""
+    user_id = session.get('user_id')
+    if not user_id:
+        flash('You must be logged in.', 'danger')
+        return redirect(url_for('login'))
+    supporter = query_db('SELECT username FROM users WHERE id = ?', (supporter_id,), one=True)
+    if supporter is None:
+        abort(404)
+    post_id = next_post_to_return(user_id, supporter_id)
+    if post_id is None:
+        flash(f"You have already reacted to every post by @{supporter['username']}. Thank you!", 'info')
+        return redirect(url_for('community_received'))
+    flash(f"@{supporter['username']} supported your posts. This is their newest post you have not "
+          f"reacted to yet. Return the favour with a reaction or a comment!", 'info')
+    return redirect(url_for('post_detail', post_id=post_id))
 
 
 # ----- Design Claim feature (Coding Assignment #2) -----
