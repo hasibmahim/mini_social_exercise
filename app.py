@@ -81,6 +81,7 @@ def query_db(query, args=(), one=False, commit=False):
 
 @app.template_filter('datetimeformat')
 def datetimeformat(value):
+    """Shows a date from the database in a short, readable format on the pages."""
     if isinstance(value, datetime):
         dt = value
     elif isinstance(value, str):
@@ -99,6 +100,7 @@ REACTION_TYPES = list(REACTION_EMOJIS.keys())
 @app.route('/')
 def feed():
     #  1. Get Pagination and Filter Parameters 
+    """The main page: shows posts with the chosen sort, filter and page, plus the extra cards on top."""
     try:
         page = int(request.args.get('page', 1))
     except ValueError:
@@ -358,6 +360,7 @@ def user_profile(username):
 
 @app.route('/u/<username>/followers')
 def user_followers(username):
+    """Lists the people who follow this user."""
     user = query_db('SELECT * FROM users WHERE username = ?', (username,), one=True)
     if not user:
         abort(404)
@@ -371,6 +374,7 @@ def user_followers(username):
 
 @app.route('/u/<username>/following')
 def user_following(username):
+    """Lists the people this user follows."""
     user = query_db('SELECT * FROM users WHERE username = ?', (username,), one=True)
     if not user:
         abort(404)
@@ -434,15 +438,18 @@ def post_detail(post_id):
 
 @app.route('/about')
 def about():
+    """Shows the About page."""
     return render_template('about.html.j2')
 
 @app.route('/privacy')
 def privacy():
+    """Shows the Privacy page."""
     return render_template('privacy.html.j2')
 
 
 @app.route('/signup', methods=['GET', 'POST'])
 def signup():
+    """Creates a new account and logs the new user in."""
     if request.method == 'POST':
         username = request.form['username']
         password = request.form['password']
@@ -483,6 +490,7 @@ def signup():
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
+    """Checks the username and password and logs the user in."""
     if request.method == 'POST':
         username = request.form['username']
         password = request.form['password']
@@ -508,6 +516,7 @@ def login():
 
 @app.route('/logout')
 def logout():
+    """Logs the user out and goes back to the login page."""
     session.clear()
     flash('Logged out.', 'info')
     return redirect(url_for('login'))
@@ -734,6 +743,7 @@ def admin_dashboard():
     PAGE_SIZE = 50
 
     def get_risk_profile(score):
+        """Turns a risk score into a level (HIGH, MEDIUM, LOW or NONE) and a sort number."""
         if score >= RISK_LEVELS["HIGH"]:
             return "HIGH", 3
         elif score >= RISK_LEVELS["MEDIUM"]:
@@ -861,6 +871,7 @@ def admin_dashboard():
 
 @app.route('/admin/delete/user/<int:user_id>', methods=['POST'])
 def admin_delete_user(user_id):
+    """Admin only: deletes a user account."""
     if session.get('username') != 'admin':
         flash("You do not have permission to perform this action.", "danger")
         return redirect(url_for('feed'))
@@ -878,6 +889,7 @@ def admin_delete_user(user_id):
 
 @app.route('/admin/delete/post/<int:post_id>', methods=['POST'])
 def admin_delete_post(post_id):
+    """Admin only: deletes a post."""
     if session.get('username') != 'admin':
         flash("You do not have permission to perform this action.", "danger")
         return redirect(url_for('feed'))
@@ -893,6 +905,7 @@ def admin_delete_post(post_id):
 
 @app.route('/admin/delete/comment/<int:comment_id>', methods=['POST'])
 def admin_delete_comment(comment_id):
+    """Admin only: deletes a comment."""
     if session.get('username') != 'admin':
         flash("You do not have permission to perform this action.", "danger")
         return redirect(url_for('feed'))
@@ -905,11 +918,13 @@ def admin_delete_comment(comment_id):
 
 @app.route('/rules')
 def rules():
+    """Shows the community rules page."""
     return render_template('rules.html.j2')
 
 @app.template_global()
 def loop_color(user_id):
     # Generate a pastel color based on user_id hash
+    """Gives every user their own soft colour, used for their user icon and name."""
     h = hashlib.md5(str(user_id).encode()).hexdigest()
     r = int(h[0:2], 16)
     g = int(h[2:4], 16)
@@ -980,13 +995,43 @@ WAITING_FROM_WHERE = '''
 
 
 def waiting_count(user_id):
-    """How many posts are still waiting for this user's reaction or comment."""
+    """
+    Counts how many posts are still waiting for this user.
+
+    A post is "waiting" when someone the user follows wrote it, and the user
+    has not reacted to it or commented on it yet (see WAITING_FROM_WHERE above).
+
+    The feed shows this number in the "Waiting for you" box and on the
+    "Waiting for you (3)" sort button. Seeing that people they follow still
+    have no answer reminds the user that their reply matters (Design Claim 1).
+
+    Returns 0 when nothing is waiting.
+    """
+    # The same user id fills all four ? in the query, so we repeat it 4 times.
     row = query_db('SELECT COUNT(*) AS n ' + WAITING_FROM_WHERE, (user_id,) * 4, one=True)
     return row['n'] if row else 0
 
 
 def waiting_posts(user_id, limit, offset=0):
-    """The waiting posts, newest first, with the same columns as the normal feed."""
+    """
+    Gets the waiting posts themselves, so the user can answer them.
+
+    It uses the same rule as waiting_count(), but returns the posts instead of
+    a number. The newest posts come first.
+
+    It is used in two places in feed():
+      - the 3 newest waiting posts are shown in a box at the top of the feed,
+      - the "Waiting for you" sort shows all of them, one page at a time.
+
+    Args:
+        user_id: the user who is logged in.
+        limit:   how many posts to return (for one page, or 3 for the box).
+        offset:  how many posts to skip first (used for page 2, 3, ...).
+
+    The posts have the same columns as the normal feed, so the feed page can
+    show them in the same way. Returns an empty list when nothing is waiting.
+    """
+    # Four times the user id for the four ?, then the page size and the offset.
     rows = query_db('SELECT p.id, p.content, p.created_at, u.username, u.id AS user_id '
                     + WAITING_FROM_WHERE + ' ORDER BY p.created_at DESC LIMIT ? OFFSET ?',
                     (user_id,) * 4 + (limit, offset))
@@ -1264,8 +1309,9 @@ def return_favour(supporter_id):
 #     newcomers to particular community members increases the frequency of
 #     these interactions."
 #    Members can join the welcome team. Every newcomer gets one team member as
-#    their first contact. That member sees their newcomers and can send a
-#    welcome in one click. This supports Design Claim 18 (friendly first contact
+#    their first contact (as soon as the team has a member). That member sees
+#    their newcomers and can send a welcome in one click. If a member leaves,
+#    the newcomers they have not welcomed yet go to another member. This supports Design Claim 18 (friendly first contact
 #    soon after joining makes newcomers stay).
 
 NEWCOMER_DAYS = 30          # accounts younger than this are newcomers
@@ -1279,7 +1325,7 @@ JOURNEY_STEPS = [
      'Give someone a reaction. Reactions are how people here say thanks.',
      'Give feedback to others.'),
     ('Welcome another newcomer',
-     'Leave a kind comment on a post by someone who joined this month.',
+     'Leave a kind comment on a post by another newcomer. You find them on the group page.',
      'Be kind to new people.'),
 ]
 
@@ -1311,11 +1357,13 @@ create_newcomer_tables()
 
 
 def user_created_at(user_id):
+    """When the user made their account (None if the user does not exist)."""
     row = query_db('SELECT created_at FROM users WHERE id = ?', (user_id,), one=True)
     return row['created_at'] if row else None
 
 
 def is_newcomer(user_id):
+    """True if the account is younger than NEWCOMER_DAYS."""
     created = user_created_at(user_id)
     return created is not None and account_age_days(created) < NEWCOMER_DAYS
 
@@ -1338,6 +1386,7 @@ def cohort_of(user_id):
 # --- Feature 1: newcomer journey (Chapter 5, Design Claim 22) ---
 
 def journey_row(user_id):
+    """The user's journey record (which steps are done), or an empty dict."""
     row = query_db('SELECT * FROM newcomer_journey WHERE user_id = ?', (user_id,), one=True)
     return dict(row) if row else {}
 
@@ -1440,6 +1489,7 @@ def newcomers():
 # --- Feature 2: welcome team and first contact (Chapter 5, Design Claim 20) ---
 
 def on_welcome_team(user_id):
+    """True if the user is a member of the welcome team."""
     return query_db('SELECT 1 FROM welcome_team WHERE user_id = ?', (user_id,), one=True) is not None
 
 
@@ -1465,6 +1515,7 @@ def assign_first_contact(newcomer_id):
 
 
 def first_contact_of(newcomer_id):
+    """The newcomer's first contact (helper id, name and welcome time), or None."""
     row = query_db('SELECT f.helper_id, f.welcomed_at, u.username FROM first_contacts f '
                    'JOIN users u ON u.id = f.helper_id WHERE f.newcomer_id = ?', (newcomer_id,), one=True)
     return dict(row) if row else None
@@ -1506,6 +1557,7 @@ def welcome_team():
 
 @app.route('/welcome/join', methods=['POST'])
 def join_welcome_team():
+    """Adds the user to the welcome team and gives waiting newcomers a first contact."""
     user_id = session.get('user_id')
     if not user_id:
         return redirect(url_for('login'))
@@ -1521,10 +1573,18 @@ def join_welcome_team():
 
 @app.route('/welcome/leave', methods=['POST'])
 def leave_welcome_team():
+    """Removes the user from the welcome team and hands their open newcomers to others."""
     user_id = session.get('user_id')
     if not user_id:
         return redirect(url_for('login'))
     query_db('DELETE FROM welcome_team WHERE user_id = ?', (user_id,), commit=True)
+    # Newcomers this member has not welcomed yet go to another team member.
+    # Welcomes already sent stay, so the history is kept.
+    waiting = query_db('SELECT newcomer_id FROM first_contacts WHERE helper_id = ? AND welcomed_at IS NULL',
+                       (user_id,)) or []
+    query_db('DELETE FROM first_contacts WHERE helper_id = ? AND welcomed_at IS NULL', (user_id,), commit=True)
+    for row in waiting:
+        assign_first_contact(row['newcomer_id'])
     flash('You left the welcome team.', 'info')
     return redirect(url_for('welcome_team'))
 
@@ -1545,6 +1605,12 @@ def send_welcome(newcomer_id):
     if not post or not text:
         flash('There is no post to answer yet, or the message is empty.', 'warning')
         return redirect(url_for('welcome_team'))
+    # A welcome is a comment, so it gets the same point-of-action reminder (DC20).
+    reminder_page = check_before_saving(user_id, text, 'comment', post['id'],
+                                        form_action=url_for('send_welcome', newcomer_id=newcomer_id),
+                                        cancel_url=url_for('welcome_team'))
+    if reminder_page:
+        return reminder_page
     query_db('INSERT INTO comments (post_id, user_id, content) VALUES (?, ?, ?)',
              (post['id'], user_id, text), commit=True)
     note_welcome(user_id, post['id'])
@@ -1949,8 +2015,9 @@ def recommend(user_id, filter_following):
          With filter_following, only posts from followed users are used.
       4. The 5 best posts are shown newest first.
       A user with no likes and no follows (a brand-new newcomer) gets the most
-      liked posts instead, so the tab is never empty. The same happens when
-      nobody is logged in.
+      liked posts instead, topped up with the newest posts, so the tab is not
+      empty while there are posts to show. The same happens when nobody is
+      logged in, and to fill the list when fewer than 5 posts match.
     Each post also gets a short 'reason', shown on the Recommended tab.
 
     To test whether your recommendation algorithm works, let's pretend we like the DIY topic. Here are some users that often post DIY comment and a few example posts. Make sure your account did not engage with anything else. You should test your algorithm with these and see if your recommendation algorithm picks up on your interest in DIY and starts showing related content.
@@ -1968,27 +2035,34 @@ def recommend(user_id, filter_following):
     by_id = {p['id']: p for p in posts}
 
     def as_result(post, reason):
+        """Copies a post and adds the reason why it is recommended."""
         item = dict(post)
         item['reason'] = reason
         return item
 
     def popular(exclude=(), allowed_authors=None, limit=5):
-        """Most liked posts (the fallback for new users and visitors)."""
+        """
+        Most liked posts, then the newest ones (the fallback for new users and visitors).
+        The user's own posts are never suggested.
+        """
         rows = query_db(f'SELECT post_id, COUNT(*) AS n FROM reactions WHERE reaction_type IN {POSITIVE_SQL} '
-                        'GROUP BY post_id ORDER BY n DESC') or []
+                        'GROUP BY post_id') or []
+        likes = {row['post_id']: row['n'] for row in rows}
+        ranked = sorted(posts, key=lambda p: (likes.get(p['id'], 0), str(p['created_at'])), reverse=True)
         result = []
-        for row in rows:
-            post = by_id.get(row['post_id'])
-            if post is None or post['id'] in exclude:
+        for post in ranked:
+            if post['id'] in exclude or (user_id and post['user_id'] == user_id):
                 continue
             if allowed_authors is not None and post['user_id'] not in allowed_authors:
                 continue
-            result.append(as_result(post, f"Popular: {row['n']} people liked it"))
+            n = likes.get(post['id'], 0)
+            result.append(as_result(post, f'Popular: {n} people liked it' if n else 'New in the community'))
             if len(result) == limit:
                 break
         return result
 
     def newest_first(items):
+        """Sorts the posts so the newest one comes first."""
         return sorted(items, key=lambda item: str(item['created_at']), reverse=True)
 
     if not user_id:

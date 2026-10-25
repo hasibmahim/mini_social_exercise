@@ -34,11 +34,11 @@ The three cards are at the top of the feed (`templates/feed.html.j2`). The menu 
 |---|---|---|
 | `recommend()` (Assignment 3.1): 5 posts based on the posts you reacted to positively and the people you follow, newest first, each with a short reason | | End of `app.py`: `recommend()`, `post_tokens()`, `token_stats()`; the reason line on the Recommended tab in `templates/feed.html.j2` |
 | **Newcomer journey**: the same 3 steps, in order, for everyone who joined in the same month, with a group page and a "Settled in" badge | Chapter 5, Design Claim 22 | `app.py`: `journey_status()`, `mark_step()`, `journey_after_post()`, `journey_after_reaction()`, `journey_after_comment()`, `introduce()` (`/introduce`), `newcomers()` (`/newcomers`); `templates/introduce.html.j2`, `templates/newcomers.html.j2`; the card in `templates/feed.html.j2` |
-| **Welcome team and first contact**: every newcomer gets one welcome team member, who can welcome them in one click | Chapter 5, Design Claim 20 (supports Design Claim 18) | `app.py`: `assign_first_contact()`, `first_contact_of()`, `note_welcome()`, `welcome_team()` (`/welcome`), `send_welcome()`; `templates/welcome.html.j2` |
+| **Welcome team and first contact**: every newcomer gets one welcome team member (when the team has members; a leaving member's open newcomers are reassigned), who can welcome them in one click. Welcomes go through the same pre-post reminder | Chapter 5, Design Claim 20 (supports Design Claim 18) | `app.py`: `assign_first_contact()`, `first_contact_of()`, `note_welcome()`, `welcome_team()` (`/welcome`), `send_welcome()`; `templates/welcome.html.j2` |
 
 **Try it:** to test `recommend()`, make a new account, follow @starboy99, @DancingDolphin and @blogger_bob, react to posts 1810, 1875, 1880 and 2113, and open the Recommended tab: it shows DIY posts. For the newcomer features, let an existing user join the welcome team (user menu, "Welcome team"), then sign up a new account and follow the steps on the journey card.
 
-The codebase contains three missing implementations, which you find [at end of app.py](https://github.com/Crowd-Computing-Oulu/mini_social_exercise/blob/44117e36e609b52c3452226797a0fd3fb5ff5258/app.py#L886). These are part of the coding assignments #1 and #2.
+The three functions that were left empty in the starter code (`recommend()`, `user_risk_analysis()` and `moderate_content()`) are now implemented in this fork, together with the features in the table above.
 
 The repository contains a ready database, you do not have to create your own data.
 
@@ -48,7 +48,7 @@ The repository contains a ready database, you do not have to create your own dat
 2. Clone your forked repository onto your computer
 3. Make sure you have Python 3.11 installed
 4. Install dependencies by running `pip install -r requirements.txt`
-5. Start the server by running `pyhon ./app.py`
+5. Start the server by running `python ./app.py`
 6. The web application will be available at http://127.0.0.1:8080. 
 7. The admin interface is at http://127.0.0.1:8080/admin, available only to the Admin user (username: admin, pw: admin)
 8. Make sure your fork is public, and add its URL to your coursework assignments.
