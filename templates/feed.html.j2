@@ -56,6 +56,8 @@
         {% else %}
         <p class="small mb-0">Your first contact is <a href="{{ url_for('user_profile', username=journey.contact.username) }}">@{{ journey.contact.username }}</a> from the welcome team. Ask them anything.</p>
         {% endif %}
+      {% else %}
+        <p class="small mb-0">No welcome team member is free yet. You get a first contact as soon as someone joins the team.</p>
       {% endif %}
     </div>
   </div>
